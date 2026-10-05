@@ -5,7 +5,7 @@ $_SERVER['HTTP_HOST'] = 'localhost'; $_SERVER['REQUEST_METHOD'] = 'GET';
 require dirname( __DIR__, 4 ) . '/wp-load.php';
 if ( ! defined( 'BSML_VERSION' ) ) { require dirname( __DIR__ ) . '/bs-my-library.php'; }
 require_once ABSPATH . 'wp-admin/includes/user.php';
-$failures = 0; $posts = array(); $terms = array(); $uid = 0; $remote_calls = 0; $remote_fail = false;
+$failures = 0; $posts = array(); $terms = array(); $extra_terms = array(); $uid = 0; $remote_calls = 0; $remote_fail = false;
 function verify( $value, $message ) { global $failures; if ( ! $value ) { $failures++; } echo ( $value ? 'PASS ' : 'FAIL ' ) . $message . PHP_EOL; }
 add_filter( 'pre_http_request', function ( $pre, $args, $url ) {
     global $remote_calls, $remote_fail;
@@ -56,6 +56,69 @@ try {
     $request->set_param( 'search', 'Fixture 14' ); verify( bsml_list( $request )['total'] === 1, 'Search includes items beyond the first page' );
     $request->set_param( 'search', '' ); $request->set_param( 'page', 1 ); $request->set_param( 'kind', 'related' );
     $list = bsml_list( $request ); verify( $list['total'] === 4, 'Recommendations exclude accessible clearings and ANY purchased tag' );
+    $cart = $list['items'][0]['cartHtml'];
+    verify( strpos( $cart, 'ajax_add_to_cart' ) !== false && strpos( $cart, 'add-to-cart=' ) !== false && strpos( $cart, '/wp-json/' ) === false, 'Simple recommendation uses the native WooCommerce button template' );
+    $variable = new WC_Product_Variable(); $variable->set_regular_price( '20' ); $variable->set_price( '20' );
+    verify( strpos( bsml_cart_html( $variable ), 'ajax_add_to_cart' ) === false, 'Variable products require their options instead of direct AJAX addition' );
+    $unavailable = wc_get_product( $claim_ids[0] ); $unavailable->set_stock_status( 'outofstock' );
+    verify( strpos( bsml_cart_html( $unavailable ), 'ajax_add_to_cart' ) === false, 'Out-of-stock products are not advertised as directly addable' );
+    $bundle = new class( $claim_ids[0] ) extends WC_Product_Simple {
+        public function get_type() { return 'bsml_bundle_fixture'; }
+        public function add_to_cart_text() { return 'Configure bundle'; }
+        public function add_to_cart_url() { return add_query_arg( array( 'add-to-cart' => $this->get_id(), 'bundle-selection' => 'required' ) ); }
+        public function supports( $feature ) { return $feature === 'ajax_add_to_cart' ? false : parent::supports( $feature ); }
+    };
+    $args_filter = function ( $args ) { $args['attributes']['data-extension-test'] = 'preserved'; return $args; };
+    $link_filter = function ( $html ) { return '<div class="extension-native-wrapper">' . $html . '</div>'; };
+    add_filter( 'woocommerce_loop_add_to_cart_args', $args_filter );
+    add_filter( 'woocommerce_loop_add_to_cart_link', $link_filter, 99 );
+    $old_uri = $_SERVER['REQUEST_URI'] ?? null;
+    $_SERVER['REQUEST_URI'] = '/wp_test/wp-json/bsml/v1/list?kind=related';
+    $original_post = $GLOBALS['post'] ?? null; $original_product = $GLOBALS['product'] ?? null;
+    try {
+        $bundle_html = bsml_cart_html( $bundle );
+        verify( strpos( $bundle_html, 'Configure bundle' ) !== false && strpos( $bundle_html, 'bundle-selection=required' ) !== false && strpos( $bundle_html, 'ajax_add_to_cart' ) === false, 'Custom product type retains its native label, URL parameters, and AJAX policy' );
+        verify( strpos( $bundle_html, 'data-extension-test="preserved"' ) !== false && strpos( $bundle_html, 'extension-native-wrapper' ) !== false, 'Native argument and HTML filters preserve extension markup' );
+        verify( strpos( $bundle_html, '/wp-json/' ) === false, 'Bundle cart URL never targets the library REST endpoint' );
+        verify( $_SERVER['REQUEST_URI'] === '/wp_test/wp-json/bsml/v1/list?kind=related' && ( $GLOBALS['post'] ?? null ) === $original_post && ( $GLOBALS['product'] ?? null ) === $original_product, 'Native rendering restores the caller request and post/product context' );
+    } finally {
+        remove_filter( 'woocommerce_loop_add_to_cart_args', $args_filter );
+        remove_filter( 'woocommerce_loop_add_to_cart_link', $link_filter, 99 );
+        if ( $old_uri === null ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $old_uri; }
+    }
+    $make_term = function ( $name, $taxonomy, $parent = 0 ) use ( &$extra_terms ) {
+        $created = wp_insert_term( $name, $taxonomy, array( 'parent' => $parent ) );
+        if ( is_wp_error( $created ) ) { throw new RuntimeException( $created->get_error_message() ); }
+        $extra_terms[] = array( $created['term_id'], $taxonomy );
+        return $created['term_id'];
+    };
+    $additional = $make_term( 'Additional ' . $suffix, 'product_cat' );
+    $tab = $fixture_settings['tabs'][0]; $tab['related'] = array( $additional );
+    $resolved = bsml_related_categories( $tab, $terms['topic'] );
+    verify( count( $resolved ) === 2 && in_array( $additional, $resolved, true ) && in_array( $terms['product_cat'], $resolved, true ), 'Automatic category match is combined with manual categories' );
+    verify( bsml_related_categories( $tab ) === $resolved, 'All includes matched configured topics plus manual categories' );
+    $tab['filter_map'][ $terms['topic'] ] = array( $additional );
+    verify( bsml_related_categories( $tab, $terms['topic'] ) === array( $additional ), 'Explicit mapping overrides automatic matching and deduplicates additions' );
+    $unmatched = $make_term( 'Unmatched ' . $suffix, 'topic' );
+    verify( bsml_related_categories( $tab, $unmatched ) === array( $additional ), 'Unmatched topic retains manual categories' );
+    verify( bsml_term_name( '  RELATIONSHIPS  ' ) === bsml_term_name( 'Relationships' ), 'Name matching ignores case and surrounding whitespace' );
+    $parent_topic = $make_term( 'Branch ' . $suffix, 'topic' );
+    $child_topic = $make_term( 'Duplicate ' . $suffix, 'topic', $parent_topic );
+    $parent_product = $make_term( 'Branch ' . $suffix, 'product_cat' );
+    $other_parent = $make_term( 'Other branch ' . $suffix, 'product_cat' );
+    $matched_child = $make_term( 'Duplicate ' . $suffix, 'product_cat', $parent_product );
+    $make_term( 'Duplicate ' . $suffix, 'product_cat', $other_parent );
+    verify( in_array( $matched_child, bsml_related_categories( $tab, $child_topic ), true ), 'Duplicate names resolved using parent hierarchy' );
+    $ambiguous = $make_term( 'Duplicate ' . $suffix, 'topic' );
+    verify( bsml_related_categories( $tab, $ambiguous ) === array( $additional ), 'Ambiguous category names do not select an arbitrary branch' );
+    wp_set_object_terms( $claim_ids[3], array( $additional ), 'product_cat' );
+    $fixture_settings['tabs'][0]['related'] = array( $additional );
+    verify( bsml_list( $request )['total'] === 4, 'Product query includes both automatic and additional categories' );
+    $fixture_settings['tabs'][0]['related_exclude'] = array( $additional );
+    verify( bsml_list( $request )['total'] === 3, 'Product exclusions take priority over combined categories' );
+    wp_set_object_terms( $claim_ids[3], array( $terms['product_cat'] ), 'product_cat' );
+    $fixture_settings['tabs'][0]['related'] = array( $terms['product_cat'] );
+    $fixture_settings['tabs'][0]['related_exclude'] = array();
     $request->set_param( 'term', 99999999 ); verify( is_wp_error( bsml_list( $request ) ), 'Forged category filters rejected' );
     $claim = new WP_REST_Request( 'POST', '/bsml/v1/claim' ); $claim->set_param( 'benefit', 'live' ); $claim->set_param( 'request_key', 'test-' . $suffix . '-claim-01' );
     $claim->set_param( 'ids', array( $claim_ids[0], $claim_ids[0] ) ); verify( is_wp_error( bsml_claim( $claim ) ), 'Duplicate product IDs rejected' );
@@ -80,10 +143,81 @@ try {
     $history = bsml_history( new WP_REST_Request( 'GET', '/bsml/v1/history' ) ); verify( $history['total'] === 3, 'Reset preserves confirmed and pending selection history' );
     $wpdb->update( $wpdb->prefix . 'lcw_contacts', array( 'need_to_sync' => 1 ), array( 'user_id' => $uid ) );
     verify( is_wp_error( bsml_membership_state() ), 'Incomplete synchronization never resets usage' );
+    // New section settings and server-side content protection.
+    $legacy = $fixture_settings['tabs'][0]; unset( $fixture_settings['tabs'][0]['show_related'], $fixture_settings['tabs'][0]['show_terms'] );
+    verify( bsml_settings()['tabs'][0]['show_related'] && bsml_settings()['tabs'][0]['show_terms'], 'Existing sections retain both display options' );
+    $fixture_settings['tabs'][0] = $legacy;
+    $fixture_settings['tabs'][0]['show_related'] = false;
+    $request = new WP_REST_Request( 'GET', '/bsml/v1/list' ); $request->set_param( 'tab', $legacy['id'] ); $request->set_param( 'kind', 'related' );
+    verify( is_wp_error( bsml_list( $request ) ), 'Disabled recommendations are rejected server-side' );
+    $fixture_settings['tabs'][0]['show_terms'] = false; $request->set_param( 'kind', 'library' ); $request->set_param( 'term', 99999999 );
+    $result = bsml_list( $request ); verify( ! is_wp_error( $result ) && $result['filters'] === array(), 'Hidden menu ignores stale category filters while retaining section scope' );
+    $page_id = wp_insert_post( array( 'post_type' => 'page', 'post_status' => 'publish', 'post_title' => 'BSML content fixture', 'post_content' => '<p>Protected fixture content</p>' ) ); $posts[] = $page_id;
+    $section = array_merge( $legacy, array( 'id' => 'content-test', 'type' => 'content', 'content' => '<p>Welcome [fixture]</p>', 'children' => array( array( 'id' => 'page-test', 'label' => 'Page child', 'enabled' => true, 'type' => 'page', 'page_id' => $page_id, 'content' => '' ) ) ) );
+    $fixture_settings['tabs'][] = $section;
+    verify( ! is_wp_error( bsml_content_section( 'content-test', 'page-test' ) ), 'Published accessible page can be embedded through its configured submenu' );
+    update_post_meta( $page_id, 'hlwpw_required_tags', array( 'bsml-missing-access-tag' ) );
+    verify( is_wp_error( bsml_content_section( 'content-test', 'page-test' ) ), 'Page embeds enforce Connector Wizard access tags' );
+    delete_post_meta( $page_id, 'hlwpw_required_tags' );
+    wp_update_post( array( 'ID' => $page_id, 'post_password' => 'fixture-secret' ) );
+    verify( is_wp_error( bsml_content_section( 'content-test', 'page-test' ) ), 'Password protected pages are not exposed' );
+    wp_update_post( array( 'ID' => $page_id, 'post_password' => '', 'post_status' => 'draft' ) );
+    verify( is_wp_error( bsml_content_section( 'content-test', 'page-test' ) ), 'Draft pages are not exposed' );
+    verify( is_wp_error( bsml_content_section( 'content-test', 'not-configured' ) ), 'Arbitrary submenu identifiers cannot load content' );
+    $public = bsml_public_tabs(); $last = end( $public );
+    verify( ! isset( $last['content'] ) && ! isset( $last['children'][0]['content'] ), 'Public navigation contains no saved content' );
+    $clean = bsml_sanitize_settings( $fixture_settings ); $last = end( $clean['tabs'] );
+    verify( $last['children'][0]['page_id'] === $page_id && $last['content'] === $section['content'], 'New content types and shortcode text survive saving' );
+    ob_start(); bsml_admin_tab( 0, $section ); $admin_html = ob_get_clean();
+    preg_match( '/<select class="bsml-taxonomy"[^>]*>(.*?)<\/select>/s', $admin_html, $taxonomy_select );
+    preg_match_all( '/<option value="([^"]+)"/', $taxonomy_select[1], $taxonomy_options );
+    verify( $taxonomy_options[1] === array( 'topic', 'ld_course_category' ), 'Taxonomy dropdown offers only Topic and Program Categories' );
+    file_put_contents( '/private/tmp/bsml-admin-fixture.html', '<form id="bsml-settings"><div id="bsml-tabs">' . $admin_html . '</div><button type="submit">Save</button></form>' );
+    add_shortcode( 'bsml_inline_fixture', function () {
+        wp_register_script( 'bsml-inline-fixture', false, array(), false, true ); wp_enqueue_script( 'bsml-inline-fixture' );
+        wp_add_inline_script( 'bsml-inline-fixture', 'window.bsmlInlineFixture=true;' );
+        return '<strong>Inline shortcode result</strong>';
+    } );
+    $content_index = count( $fixture_settings['tabs'] ) - 1;
+    $fixture_settings['tabs'][$content_index]['content'] = 'Welcome [bsml_inline_fixture] [bs_my_library]';
+    $content_request = new WP_REST_Request( 'GET', '/bsml/v1/content' ); $content_request->set_param( 'section', 'content-test' );
+    $inline = bsml_custom_content( $content_request );
+    verify( strpos( $inline['html'], '<strong>Inline shortcode result</strong>' ) !== false && strpos( $inline['html'], '<iframe' ) === false && strpos( $inline['html'], 'bsml-root' ) === false, 'Custom endpoint returns rendered shortcode content without a viewer or nested library' );
+    verify( strpos( $inline['assets'], 'window.bsmlInlineFixture=true;' ) !== false, 'Custom endpoint returns enqueued shortcode initialization assets' );
+    $content_request->set_param( 'child', 'page-test' );
+    verify( is_wp_error( bsml_custom_content( $content_request ) ), 'Custom endpoint cannot bypass page access restrictions' );
+    $content_request->set_param( 'child', '' ); $fixture_settings['tabs'][$content_index]['enabled'] = false;
+    verify( is_wp_error( bsml_custom_content( $content_request ) ), 'Disabled custom sections cannot be retrieved' );
+    $fixture_settings['tabs'][$content_index]['enabled'] = true;
+    remove_shortcode( 'bsml_inline_fixture' );
+    // Exercise course taxonomy/post-type pairing even without LearnDash installed locally.
+    if ( ! post_type_exists( 'sfwd-courses' ) ) { register_post_type( 'sfwd-courses', array( 'public' => true ) ); }
+    if ( ! taxonomy_exists( 'ld_course_category' ) ) { register_taxonomy( 'ld_course_category', 'sfwd-courses', array( 'public' => true, 'hierarchical' => true ) ); }
+    $program_term = wp_insert_term( 'BSML Program ' . $suffix, 'ld_course_category' );
+    if ( is_wp_error( $program_term ) ) { throw new RuntimeException( $program_term->get_error_message() ); }
+    $program_term = $program_term['term_id']; $extra_terms[] = array( $program_term, 'ld_course_category' );
+    $course_ids = array();
+    foreach ( array( 'Beta', 'Alpha', 'Restricted' ) as $title ) {
+        $course = wp_insert_post( array( 'post_type' => 'sfwd-courses', 'post_status' => 'publish', 'post_title' => 'BSML Program ' . $title ) );
+        $posts[] = $course; $course_ids[] = $course;
+        wp_set_object_terms( $course, array( (int) $program_term ), 'ld_course_category' );
+        update_post_meta( $course, 'hlwpw_required_tags', array( $title === 'Restricted' ? 'bsml-denied-course' : 'level-3' ) );
+    }
+    $fixture_settings['tabs'][0] = array_merge( $legacy, array( 'taxonomy' => 'ld_course_category', 'include' => array( $program_term ), 'exclude' => array(), 'filters' => array( $program_term ) ) );
+    $request->set_param( 'term', $program_term ); $request->set_param( 'sort', 'az' );
+    $courses = bsml_list( $request );
+    if ( is_wp_error( $courses ) ) { throw new RuntimeException( $courses->get_error_code() . ': ' . $courses->get_error_message() ); }
+    verify( ! is_wp_error( $courses ) && $courses['total'] === 2 && $courses['items'][0]['id'] === $course_ids[1], 'Program Categories queries accessible LearnDash courses and sorts them' );
+    verify( $courses['items'][0]['postType'] === 'sfwd-courses' && $courses['items'][0]['clearing'] === 0 && $courses['items'][0]['url'] === get_permalink( $course_ids[1] ), 'Course cards use their native LearnDash link instead of the clearing viewer' );
+    verify( in_array( (int) $program_term, wp_list_pluck( $courses['filters'], 'id' ), true ), 'Program category menu includes populated course categories' );
+    $request->set_param( 'search', 'Beta' ); $courses = bsml_list( $request );
+    verify( $courses['total'] === 1 && $courses['items'][0]['id'] === $course_ids[0], 'Program search returns matching accessible courses' );
+    wp_set_current_user( 0 ); verify( is_wp_error( bsml_content_section( 'content-test' ) ), 'Anonymous content requests are rejected' );
 } catch ( Throwable $error ) {
     $failures++; echo 'FAIL ' . $error->getMessage() . PHP_EOL;
 } finally {
     foreach ( $posts as $post_id ) { wp_delete_post( $post_id, true ); }
+    foreach ( array_reverse( $extra_terms ) as $term ) { wp_delete_term( $term[0], $term[1] ); }
     foreach ( $terms as $taxonomy => $term_id ) { wp_delete_term( $term_id, $taxonomy ); }
     if ( $uid && ! is_wp_error( $uid ) ) {
         $wpdb->delete( $wpdb->prefix . 'bsml_claims', array( 'user_id' => $uid ) );

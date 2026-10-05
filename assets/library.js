@@ -54,14 +54,58 @@
             h('span', null, 'Page ' + data.page + ' of ' + data.pages),
             h('button', {type: 'button', disabled: data.page >= data.pages, onClick: () => change(prefix, {page: data.page + 1})}, 'Next'));
     }
+    function NativeCart({html, title}) {
+        const container = useRef(null);
+        useEffect(function () {
+            const node = container.current;
+            const $ = window.jQuery;
+            if (!node || !$) return;
+            function onAdded(event, fragments, hash, $button) {
+                const button = $button && $button[0];
+                if (!button || !node.contains(button)) return;
+                const label = config.addedToCart || 'Added to cart';
+                // Keep extension wrappers/icons intact; change only visible label text.
+                const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT, {
+                    acceptNode(text) {
+                        return text.textContent.trim() && !text.parentElement.closest('[aria-hidden="true"], .screen-reader-text, .bsml-sr')
+                            ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                    }
+                });
+                const text = walker.nextNode();
+                if (text) text.textContent = label;
+                else button.appendChild(document.createTextNode(label));
+                button.setAttribute('aria-label', label + ': ' + title);
+            }
+            $(document.body).on('added_to_cart.bsml', onAdded);
+            return () => $(document.body).off('added_to_cart.bsml', onAdded);
+        }, [title]);
+        // WooCommerce owns this subtree and its delegated click handlers. React
+        // leaves it untouched on unrelated rerenders, including success feedback.
+        return h('div', {ref: container, className: 'bsml-native-cart woocommerce', dangerouslySetInnerHTML: {__html: html}});
+    }
     function List({kind, prefix, title, tab, query, change, revision, refresh, open, benefit, selection, toggle, remaining, blocked, onLoaded}) {
         const search = query.get('bsml_' + prefix + '_q') || '';
         const sort = query.get('bsml_' + prefix + '_sort') || tab.sort || 'newest';
         const page = query.get('bsml_' + prefix + '_page') || '1';
-        const term = query.get('bsml_' + (kind === 'related' ? 'library' : prefix) + '_term') || '0';
+        const term = tab.type === 'standard' && tab.show_terms === false ? '0' : query.get('bsml_' + (kind === 'related' ? 'library' : prefix) + '_term') || '0';
         const params = new URLSearchParams({tab: tab.id, kind, search, sort, page, term});
         if (benefit) params.set('benefit', benefit);
         const result = useResource('list?' + params, revision);
+        const listHeading = useRef(null);
+        const scrollAfterFilter = useRef(false);
+        function scrollToResults() {
+            if (!listHeading.current) return;
+            listHeading.current.focus({preventScroll: true});
+            listHeading.current.scrollIntoView({block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+        }
+        useEffect(function () {
+            if (result.data && scrollAfterFilter.current) { scrollAfterFilter.current = false; scrollToResults(); }
+        }, [result.data]);
+        function selectCategory(id) {
+            if (Number(term) === id && Number(page) === 1) { scrollToResults(); return; }
+            scrollAfterFilter.current = true;
+            change(prefix, {term: id, page: 1});
+        }
         useEffect(function () { if (result.data && onLoaded) onLoaded(); }, [result.data]);
         const [wishBusy, setWishBusy] = useState(null);
         const [wishError, setWishError] = useState(null);
@@ -77,21 +121,26 @@
             }).catch(setWishError).finally(() => setWishBusy(null));
         }
         return h('section', {className: 'bsml-section', 'aria-label': title},
-            h('div', {className: 'bsml-section-heading'}, h('h2', null, title), result.data && h('span', {className: 'bsml-count', role: 'status', 'aria-live': 'polite'}, result.data.total + ' items')),
+            h('div', {className: 'bsml-section-heading'}, h('h2', {ref: listHeading, tabIndex: -1}, title), result.data && h('span', {className: 'bsml-count', role: 'status', 'aria-live': 'polite'}, result.data.total + ' items')),
             h(Toolbar, {prefix, query, change, product, defaultSort: tab.sort}),
-            result.data && kind !== 'related' && result.data.filters.length > 0 && h('div', {className: 'bsml-filters', 'aria-label': 'Category filters'},
-                [{id: 0, label: 'All'}].concat(result.data.filters).map(filter => h('button', {key: filter.id, type: 'button', 'aria-pressed': Number(term) === filter.id, onClick: () => change(prefix, {term: filter.id, page: 1})}, filter.label))),
             wishError && h(ErrorBox, {error: wishError, retry: () => { setWishError(null); refresh(); }}),
             result.error ? h(ErrorBox, {error: result.error, retry: result.retry}) : result.loading ? h(Skeleton) : result.data && h(wp.element.Fragment, null,
                 result.data.items.length === 0 ? h('div', {className: 'bsml-empty'}, h('h3', null, search || term !== '0' ? 'No matching items' : 'Nothing here yet'), h('p', null, result.data.configured === false ? 'This collection is being prepared. Please check back soon.' : kind === 'related' ? 'There are no additional recommendations in this collection.' : kind === 'wishlist' ? 'Save products to your wishlist while exploring the library.' : 'Try another category or search, or explore your other collections.')) :
                     h('div', {className: 'bsml-grid'}, result.data.items.map(item => h('article', {className: 'bsml-card' + (selection && selection.includes(item.id) ? ' is-selected' : ''), key: item.id},
-                        item.image ? h('img', {src: item.image, alt: '', loading: 'lazy', decoding: 'async'}) : h('div', {className: 'bsml-image-placeholder', 'aria-hidden': true}, '✧'),
+                        kind === 'related' ? h('a', {className: 'bsml-product-image', href: item.url, 'aria-label': 'View details for ' + item.title},
+                            item.image ? h('img', {src: item.image, alt: '', loading: 'lazy', decoding: 'async'}) : h('div', {className: 'bsml-image-placeholder', 'aria-hidden': true}, '✧')) :
+                            item.image ? h('img', {src: item.image, alt: '', loading: 'lazy', decoding: 'async'}) : h('div', {className: 'bsml-image-placeholder', 'aria-hidden': true}, '✧'),
                         h('div', {className: 'bsml-card-body'}, h('h3', null, item.title), item.event && h('p', {className: 'bsml-meta'}, item.event),
                             product && h('div', {className: 'bsml-price', dangerouslySetInnerHTML: {__html: item.priceHtml}}),
                             kind === 'benefit' ? h('button', {type: 'button', className: 'bsml-button', disabled: blocked || (!selection.includes(item.id) && selection.length >= remaining), 'aria-pressed': selection.includes(item.id), onClick: () => toggle(item.id)}, selection.includes(item.id) ? 'Selected ✓' : 'Select') :
-                                item.clearing ? h('button', {type: 'button', className: 'bsml-button', onClick: () => open(item.clearing)}, 'Open clearing') : h('a', {className: 'bsml-button', href: item.url}, 'View details'),
+                                kind === 'related' ? h(NativeCart, {html: item.cartHtml || '', title: item.title}) :
+                                    item.clearing ? h('button', {type: 'button', className: 'bsml-button', onClick: () => open(item.clearing)}, 'Open clearing') : h('a', {className: 'bsml-button', href: item.url}, item.postType === 'sfwd-courses' ? 'Open program' : 'View details'),
                             product && config.wishlist && h('button', {type: 'button', className: 'bsml-wish', disabled: wishBusy !== null, onClick: () => wishlist(item), 'aria-label': (item.wishlisted ? 'Remove ' : 'Save ') + item.title + (item.wishlisted ? ' from wishlist' : ' to wishlist')}, wishBusy === item.id ? 'Updating…' : item.wishlisted ? '♥ Remove from wishlist' : '♡ Save to wishlist'))))),
-                h(Pagination, {data: result.data, prefix, change})));
+                h(Pagination, {data: result.data, prefix, change}),
+                kind !== 'related' && tab.show_terms !== false && result.data.filters.length > 0 && h('section', {className: 'bsml-category-section', 'aria-label': 'Browse by category'},
+                    h('h3', null, 'Browse by category'),
+                    h('div', {className: 'bsml-filters', 'aria-label': 'Category filters'},
+                        [{id: 0, label: 'All'}].concat(result.data.filters).map(filter => h('button', {key: filter.id, type: 'button', 'aria-pressed': Number(term) === filter.id, onClick: () => selectCategory(filter.id)}, filter.label))))));
     }
     function History({query, change, revision, open}) {
         const params = new URLSearchParams({search: query.get('bsml_history_q') || '', sort: query.get('bsml_history_sort') || 'newest', page: query.get('bsml_history_page') || '1'});
@@ -102,14 +151,78 @@
                     h('div', null, item.clearing ? h('button', {type: 'button', className: 'bsml-text-button', onClick: () => open(item.clearing)}, item.title) : h('strong', null, item.title), h('span', {className: 'bsml-meta'}, item.benefit === 'live' ? 'Live GEC' : item.benefit === 'replay' ? 'Replay' : item.benefit)),
                     h('span', null, item.displayDate, item.status === 'pending' && h('small', null, ' · Awaiting confirmation'))))) : h('p', null, 'No matching past selections.'), h(Pagination, {data: result.data, prefix: 'history', change})));
     }
-    function Frame({kind, id, revision}) {
+    const contentAssetLoads = new Map();
+    async function loadContentScript(script) {
+        if (script.src) {
+            const src = script.src;
+            if (contentAssetLoads.has(src)) return contentAssetLoads.get(src);
+            if (Array.from(document.scripts).some(existing => existing.src === src)) return;
+            const promise = new Promise((resolve, reject) => {
+                const node = document.createElement('script');
+                for (const attr of script.attributes) node.setAttribute(attr.name, attr.value);
+                node.async = false;
+                node.onload = resolve;
+                node.onerror = () => { node.remove(); contentAssetLoads.delete(src); reject(new Error('A shortcode script could not load. Please try again.')); };
+                document.head.appendChild(node);
+            });
+            contentAssetLoads.set(src, promise);
+            return promise;
+        }
+        const node = document.createElement('script');
+        for (const attr of script.attributes) node.setAttribute(attr.name, attr.value);
+        node.textContent = script.textContent;
+        document.head.appendChild(node);
+        node.remove();
+    }
+    function CustomContent({section, child, revision}) {
+        const params = new URLSearchParams({section, child: child || ''});
+        const result = useResource('content?' + params, revision);
+        const container = useRef(null);
+        const [assetError, setAssetError] = useState(null);
+        useEffect(function () {
+            if (!result.data || !container.current) return;
+            let active = true;
+            const node = container.current;
+            setAssetError(null);
+            const content = document.createElement('template');
+            content.innerHTML = result.data.html || '';
+            const assets = document.createElement('template');
+            assets.innerHTML = result.data.assets || '';
+            const scripts = [];
+            for (const fragment of [assets.content, content.content]) {
+                fragment.querySelectorAll('script').forEach(script => {
+                    if (!script.type || /^(module|text\/javascript|application\/javascript)$/i.test(script.type)) {
+                        scripts.push(script.cloneNode(true)); script.remove();
+                    }
+                });
+            }
+            node.replaceChildren(content.content);
+            assets.content.querySelectorAll('style, link[rel="stylesheet"]').forEach(asset => {
+                const exists = asset.id ? document.getElementById(asset.id) : asset.href && Array.from(document.querySelectorAll('link[rel="stylesheet"]')).some(link => link.href === asset.href);
+                if (!exists) document.head.appendChild(asset.cloneNode(true));
+            });
+            (async function () {
+                try {
+                    for (const script of scripts) { if (!active) return; await loadContentScript(script); }
+                    if (active) node.dispatchEvent(new CustomEvent('bsml:content-ready', {bubbles: true}));
+                } catch (error) { if (active) setAssetError(error); }
+            })();
+            return () => { active = false; node.dispatchEvent(new CustomEvent('bsml:content-unmount', {bubbles: true})); node.replaceChildren(); };
+        }, [result.data]);
+        return h('section', {className: 'bsml-custom-content', 'aria-busy': result.loading},
+            result.loading && h('p', {role: 'status'}, 'Loading content…'),
+            result.error && h(ErrorBox, {error: result.error, retry: result.retry}),
+            assetError && h(ErrorBox, {error: assetError, retry: result.retry}),
+            h('div', {ref: container}));
+    }
+    function Frame({kind, id, revision, source, title}) {
         const ref = useRef(null);
         const [height, setHeight] = useState(600);
         const [loaded, setLoaded] = useState(false);
         const [slow, setSlow] = useState(false);
-        const url = new URL(config.embed);
+        const url = new URL(source || config.embed);
         url.searchParams.set('bsml_embed', kind);
-        if (id) url.searchParams.set('clearing_id', id);
+        if (id && kind === 'clearing') url.searchParams.set('clearing_id', id);
         useEffect(function () {
             function onMessage(event) {
                 if (event.origin === location.origin && ref.current && event.source === ref.current.contentWindow && event.data && event.data.type === 'bsml-height') {
@@ -120,9 +233,9 @@
             addEventListener('message', onMessage);
             return () => removeEventListener('message', onMessage);
         }, []);
-        useEffect(function () { setLoaded(false); setSlow(false); const timer = setTimeout(() => setSlow(true), 12000); return () => clearTimeout(timer); }, [kind, id, revision]);
-        return h('div', {className: 'bsml-frame-wrap'}, !loaded && h('p', {role: 'status'}, slow ? 'The content is taking longer to load. You can use the open-page link above.' : 'Loading content…'),
-            h('iframe', {key: kind + '-' + id + '-' + revision, ref, src: url.href, title: kind === 'clearing' ? 'Clearing content and video' : 'Accelerator appointment', className: 'bsml-frame', style: {height: height + 'px'}, allow: 'fullscreen; picture-in-picture; encrypted-media', onLoad: () => setLoaded(true)}));
+        useEffect(function () { setLoaded(false); setSlow(false); const timer = setTimeout(() => setSlow(true), 12000); return () => clearTimeout(timer); }, [kind, id, revision, source]);
+        return h('div', {className: 'bsml-frame-wrap'}, !loaded && h('p', {role: 'status'}, slow ? 'The content is taking longer to load. Try Refresh if it does not appear.' : 'Loading content…'),
+            h('iframe', {key: kind + '-' + id + '-' + revision + '-' + source, ref, src: url.href, title: title || (kind === 'clearing' ? 'Clearing content and video' : 'Accelerator appointment'), className: 'bsml-frame', style: {height: height + 'px'}, allow: 'fullscreen; picture-in-picture; encrypted-media', onLoad: () => setLoaded(true)}));
     }
     function Membership(props) {
         const {query, change, revision, refresh, tab, open} = props;
@@ -158,6 +271,19 @@
                 state.data.appointment.eligible && h('section', {className: 'bsml-section'}, h('h2', null, 'Your accelerator session'), h(Frame, {kind: 'appointment', revision}))),
             h(History, {query, change, revision, open}));
     }
+    function MenuItem({item, active, childId, navigate, index}) {
+        const [expanded, setExpanded] = useState(active);
+        const children = item.children || [];
+        useEffect(() => { if (active) setExpanded(true); }, [active, childId]);
+        const submenuId = 'bsml-submenu-' + item.id;
+        return h('div', {className: 'bsml-nav-group'},
+            h('div', {className: 'bsml-nav-parent'},
+                h('button', {type: 'button', 'aria-current': active && !childId ? 'page' : undefined, onClick: () => { setExpanded(true); navigate(item.id); }},
+                    h('span', {className: 'bsml-nav-number', 'aria-hidden': true}, String(index + 1).padStart(2, '0')), item.label),
+                children.length > 0 && h('button', {type: 'button', className: 'bsml-submenu-toggle', 'aria-label': 'Toggle ' + item.label + ' submenu', 'aria-expanded': expanded, 'aria-controls': submenuId, onClick: () => setExpanded(value => !value)}, expanded ? '▴' : '▾')),
+            children.length > 0 && h('div', {id: submenuId, className: 'bsml-submenu' + (expanded ? ' is-open' : ''), 'aria-hidden': !expanded},
+                h('div', null, children.map(child => h('button', {key: child.id, type: 'button', tabIndex: expanded ? 0 : -1, 'aria-current': active && childId === child.id ? 'page' : undefined, onClick: () => navigate(item.id, child.id)}, child.label)))));
+    }
     function App() {
         const [query, setQuery] = useState(() => new URLSearchParams(location.search));
         const [revision, setRevision] = useState(0);
@@ -166,7 +292,9 @@
         const restoreScroll = useRef(null);
         const tabs = config.tabs;
         const tab = tabs.find(t => t.id === query.get('bsml_tab')) || tabs.find(t => t.id === config.defaultTab) || tabs[0];
-        const clearing = Number(query.get('bsml_clearing')) || 0;
+        const child = tab && (tab.children || []).find(item => item.id === query.get('bsml_child'));
+        const display = child || tab;
+        const clearing = tab && tab.type === 'standard' ? Number(query.get('bsml_clearing')) || 0 : 0;
         const refresh = () => setRevision(value => value + 1);
         useEffect(function () {
             function pop() { setQuery(new URLSearchParams(location.search)); setRevision(value => value + 1); if (history.state && history.state.bsmlScroll != null) restoreScroll.current = history.state.bsmlScroll; }
@@ -185,10 +313,10 @@
             if (prefix === 'library' && Object.prototype.hasOwnProperty.call(values, 'term')) next.delete('bsml_related_page');
             update(next, replace);
         }
-        function navigate(id) {
+        function navigate(id, childId) {
             const next = new URLSearchParams(location.search);
             Array.from(next.keys()).filter(key => key.startsWith('bsml_')).forEach(key => next.delete(key));
-            next.set('bsml_tab', id); update(next); refresh();
+            next.set('bsml_tab', id); if (childId) next.set('bsml_child', childId); update(next); refresh();
             requestAnimationFrame(() => heading.current && heading.current.focus());
         }
         function open(id) {
@@ -211,13 +339,15 @@
         const props = {tab, query, change, revision, refresh, open, onLoaded};
         return h('div', {className: 'bsml-shell'},
             h('aside', {className: 'bsml-sidebar'}, h('div', {className: 'bsml-brand'}, h('span', {className: 'bsml-eyebrow'}, 'A SPACE FOR YOUR GROWTH'), h('strong', null, 'My Library')),
-                h('nav', {'aria-label': 'Library sections', className: 'bsml-desktop-nav'}, tabs.map((item, index) => h('button', {key: item.id, type: 'button', 'aria-current': item.id === tab.id ? 'page' : undefined, onClick: () => navigate(item.id)}, h('span', {className: 'bsml-nav-number', 'aria-hidden': true}, String(index + 1).padStart(2, '0')), item.label))),
-                h('label', {className: 'bsml-mobile-nav'}, h('span', {className: 'bsml-sr'}, 'Library section'), h('select', {value: tab.id, onChange: e => navigate(e.target.value)}, tabs.map(item => h('option', {value: item.id, key: item.id}, item.label))))),
-            h('main', {className: 'bsml-main'}, h('header', {className: 'bsml-header'}, h('div', null, h('span', {className: 'bsml-eyebrow'}, clearing ? 'YOUR VIEWING SPACE' : 'WELCOME TO YOUR COLLECTION'), h('h1', {ref: heading, tabIndex: -1}, tab.label)), h('button', {type: 'button', className: 'bsml-refresh', onClick: refresh}, 'Refresh')),
+                h('nav', {'aria-label': 'Library sections', className: 'bsml-desktop-nav'}, tabs.map((item, index) => h(MenuItem, {key: item.id, item, index, active: item.id === tab.id, childId: child && child.id, navigate}))),
+                h('label', {className: 'bsml-mobile-nav'}, h('span', {className: 'bsml-sr'}, 'Library section'), h('select', {value: tab.id + (child ? '/' + child.id : ''), onChange: e => { const parts = e.target.value.split('/'); navigate(parts[0], parts[1]); }}, tabs.flatMap(item => [h('option', {value: item.id, key: item.id}, item.label)].concat((item.children || []).map(sub => h('option', {value: item.id + '/' + sub.id, key: item.id + '/' + sub.id}, '— ' + sub.label))))))),
+            h('main', {className: 'bsml-main'}, h('header', {className: 'bsml-header'}, h('div', null, h('span', {className: 'bsml-eyebrow'}, clearing ? 'YOUR VIEWING SPACE' : 'WELCOME TO YOUR COLLECTION'), h('h1', {ref: heading, tabIndex: -1}, display.label)), h('button', {type: 'button', className: 'bsml-refresh', onClick: refresh}, 'Refresh')),
                 clearing ? h('section', {className: 'bsml-viewer'}, h('div', {className: 'bsml-viewer-nav'}, h('button', {type: 'button', onClick: back}, '← Back to ' + tab.label), h('a', {href: config.embed + (config.embed.includes('?') ? '&' : '?') + 'post_type=clearing&p=' + clearing, target: '_blank', rel: 'noopener'}, 'Open page ↗')), h(Frame, {kind: 'clearing', id: clearing, revision})) :
+                    display.type === 'content' ? h(CustomContent, {key: tab.id + '/' + (child ? child.id : ''), section: tab.id, child: child && child.id, revision}) :
+                    display.type === 'page' ? h(Frame, {kind: 'section', id: tab.id + (child ? '/' + child.id : ''), source: display.url, title: display.label, revision}) :
                     tab.type === 'membership' ? h(Membership, Object.assign({key: tab.id}, props)) : tab.type === 'wishlist' ? h(List, Object.assign({key: tab.id, kind: 'wishlist', prefix: 'wishlist', title: 'Your saved products'}, props)) : h(wp.element.Fragment, {key: tab.id},
                         h(List, Object.assign({kind: 'library', prefix: 'library', title: 'Available in your library'}, props)),
-                        h(List, Object.assign({kind: 'related', prefix: 'related', title: 'Explore more'}, props)))));
+                        tab.show_related !== false && h(List, Object.assign({kind: 'related', prefix: 'related', title: 'Explore more'}, props)))));
     }
     document.querySelectorAll('.bsml-root').forEach(root => createRoot(root).render(h(App)));
 })(window.wp, window.BSML);

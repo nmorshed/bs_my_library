@@ -5,7 +5,7 @@ function bsml_defaults() {
     $names = array( 'books-audios' => 'My Books & Audios', 'chakra' => 'My Chakra Series', 'classes' => 'My Classes', 'clearings' => 'My Clearings', 'gifts' => 'My Free Gifts', 'journeys' => 'My Guided Journeys', 'vip' => 'My VIP Membership', 'packages' => 'My Packages', 'programs' => 'My Programs', 'purchased' => 'My Purchased', 'wishlist' => 'My Wishlist' );
     $tabs = array();
     foreach ( $names as $id => $label ) {
-        $tabs[] = array( 'id' => $id, 'label' => $label, 'type' => $id === 'vip' ? 'membership' : ( $id === 'wishlist' ? 'wishlist' : 'standard' ), 'enabled' => true, 'taxonomy' => 'topic', 'include' => array(), 'exclude' => array(), 'descendants' => true, 'exclude_descendants' => true, 'filters' => array(), 'related' => array(), 'related_exclude' => array(), 'related_descendants' => true, 'related_exclude_descendants' => true, 'filter_map' => array(), 'sort' => 'newest' );
+        $tabs[] = array( 'id' => $id, 'label' => $label, 'type' => $id === 'vip' ? 'membership' : ( $id === 'wishlist' ? 'wishlist' : 'standard' ), 'enabled' => true, 'taxonomy' => 'topic', 'include' => array(), 'exclude' => array(), 'descendants' => true, 'exclude_descendants' => true, 'filters' => array(), 'related' => array(), 'related_exclude' => array(), 'related_descendants' => true, 'related_exclude_descendants' => true, 'filter_map' => array(), 'sort' => 'newest', 'show_related' => true, 'show_terms' => true, 'page_id' => 0, 'content' => '', 'children' => array() );
     }
     $benefits = array();
     foreach ( array( 'live' => 'Live GEC', 'replay' => 'Replays' ) as $key => $label ) {
@@ -20,7 +20,60 @@ function bsml_defaults() {
             array( 'label' => 'Level 3', 'tag' => 'level-3', 'live' => 2, 'replay' => 3, 'appointment' => true ),
         ), 'appointment_tag' => 'membership appointment booked', 'appointment_available' => '', 'appointment_booked' => '<p>Your accelerator session has been booked for this cycle.</p>' );
 }
-function bsml_settings() { return array_replace( bsml_defaults(), get_option( 'bsml_settings', array() ) ); }
+function bsml_settings() {
+    $settings = array_replace( bsml_defaults(), get_option( 'bsml_settings', array() ) );
+    foreach ( $settings['tabs'] as &$tab ) {
+        $tab = array_merge( array( 'show_related' => true, 'show_terms' => true, 'page_id' => 0, 'content' => '', 'children' => array() ), $tab );
+    }
+    unset( $tab );
+    return $settings;
+}
+function bsml_content_fields( $row ) {
+    return array( 'page_id' => absint( $row['page_id'] ?? 0 ), 'content' => wp_kses_post( $row['content'] ?? '' ) );
+}
+function bsml_public_tabs() {
+    $tabs = array();
+    foreach ( bsml_settings()['tabs'] as $tab ) {
+        if ( empty( $tab['enabled'] ) ) { continue; }
+        $public = array_intersect_key( $tab, array_flip( array( 'id', 'label', 'type', 'sort', 'show_related', 'show_terms' ) ) );
+        $public['children'] = array();
+        if ( in_array( $tab['type'], array( 'page', 'content' ), true ) ) {
+            $public['url'] = bsml_section_url( $tab, $tab['id'] );
+            foreach ( $tab['children'] as $child ) {
+                if ( empty( $child['enabled'] ) ) { continue; }
+                $public['children'][] = array( 'id' => $child['id'], 'label' => $child['label'], 'type' => $child['type'], 'url' => bsml_section_url( $child, $tab['id'], $child['id'] ) );
+            }
+        }
+        $tabs[] = $public;
+    }
+    return $tabs;
+}
+function bsml_section_url( $section, $parent, $child = '' ) {
+    $url = $section['type'] === 'page' && ! empty( $section['page_id'] ) ? get_permalink( $section['page_id'] ) : home_url( '/' );
+    return add_query_arg( array( 'bsml_embed' => 'section', 'bsml_section' => $parent, 'bsml_child' => $child ), $url ?: home_url( '/' ) );
+}
+function bsml_content_section( $parent, $child = '' ) {
+    if ( ! is_user_logged_in() ) { return new WP_Error( 'bsml_login', 'Please log in to view this content.' ); }
+    foreach ( bsml_settings()['tabs'] as $tab ) {
+        if ( $tab['id'] !== $parent || empty( $tab['enabled'] ) || ! in_array( $tab['type'], array( 'page', 'content' ), true ) ) { continue; }
+        $section = $tab;
+        if ( $child !== '' ) {
+            $section = null;
+            foreach ( $tab['children'] as $candidate ) {
+                if ( $candidate['id'] === $child && ! empty( $candidate['enabled'] ) ) { $section = $candidate; break; }
+            }
+        }
+        if ( ! $section ) { break; }
+        if ( $section['type'] === 'page' ) {
+            $page = get_post( $section['page_id'] );
+            if ( ! $page || $page->post_type !== 'page' || ! bsml_has_access( $page->ID ) || post_password_required( $page ) ) {
+                return new WP_Error( 'bsml_access', 'This page is not available to your account.' );
+            }
+        }
+        return $section;
+    }
+    return new WP_Error( 'bsml_section', 'This section is unavailable.' );
+}
 function bsml_ids( $value ) {
     return array_values( array_unique( array_filter( array_map( 'absint', is_array( $value ) ? $value : explode( ',', (string) $value ) ) ) ) );
 }
@@ -36,12 +89,24 @@ function bsml_sanitize_settings( $raw ) {
         $seen[ $id ] = true;
         $out['tabs'][] = array_merge( bsml_scope( $tab ), array(
             'id' => $id, 'label' => sanitize_text_field( $tab['label'] ?? $id ), 'enabled' => ! empty( $tab['enabled'] ),
-            'type' => in_array( $tab['type'] ?? '', array( 'standard', 'membership', 'wishlist' ), true ) ? $tab['type'] : 'standard',
+            'type' => in_array( $tab['type'] ?? '', array( 'standard', 'membership', 'wishlist', 'page', 'content' ), true ) ? $tab['type'] : 'standard',
             'taxonomy' => sanitize_key( $tab['taxonomy'] ?? 'topic' ), 'filters' => bsml_ids( $tab['filters'] ?? array() ),
             'related' => bsml_ids( $tab['related'] ?? array() ), 'related_exclude' => bsml_ids( $tab['related_exclude'] ?? array() ),
             'related_descendants' => ! empty( $tab['related_descendants'] ), 'related_exclude_descendants' => ! empty( $tab['related_exclude_descendants'] ),
+            'show_related' => ! empty( $tab['show_related'] ), 'show_terms' => ! empty( $tab['show_terms'] ),
+            'page_id' => absint( $tab['page_id'] ?? 0 ), 'content' => wp_kses_post( $tab['content'] ?? '' ), 'children' => array(),
             'filter_map' => bsml_sanitize_map( $tab['filter_map'] ?? '' ), 'sort' => bsml_sort_key( $tab['sort'] ?? 'newest' ),
         ) );
+        $index = count( $out['tabs'] ) - 1;
+        if ( in_array( $out['tabs'][$index]['type'], array( 'page', 'content' ), true ) ) {
+            $child_seen = array();
+            foreach ( (array) ( $tab['children'] ?? array() ) as $child ) {
+                $child_id = sanitize_key( $child['id'] ?? '' );
+                if ( ! $child_id || isset( $child_seen[$child_id] ) ) { continue; }
+                $child_seen[$child_id] = true;
+                $out['tabs'][$index]['children'][] = array_merge( bsml_content_fields( $child ), array( 'id' => $child_id, 'label' => sanitize_text_field( $child['label'] ?? $child_id ), 'enabled' => ! empty( $child['enabled'] ), 'type' => ( $child['type'] ?? '' ) === 'page' ? 'page' : 'content' ) );
+            }
+        }
     }
     $out['default_tab'] = sanitize_key( $raw['default_tab'] ?? '' );
     $out['pages'] = bsml_ids( $raw['pages'] ?? '' );

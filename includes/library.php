@@ -62,9 +62,126 @@ function bsml_filters( $taxonomy, $scope, $explicit = array() ) {
     $allowed = array_diff( bsml_expand_terms( $scope['include'], $taxonomy, $scope['descendants'] ), bsml_expand_terms( $scope['exclude'], $taxonomy, $scope['exclude_descendants'] ) );
     if ( $explicit ) { $ids = array_values( array_intersect( $explicit, $allowed ) ); }
     else { $ids = array_values( array_diff( $allowed, $scope['include'] ) ); if ( count( $scope['include'] ) > 1 ) { $ids = array_values( $allowed ); } }
+    if ( ! $ids ) { return array(); }
+    $candidates = get_terms( array( 'taxonomy' => $taxonomy, 'include' => array_values( $allowed ), 'hide_empty' => false, 'pad_counts' => false ) );
+    if ( is_wp_error( $candidates ) ) { return array(); }
+    $by_id = array(); $populated = array();
+    foreach ( $candidates as $candidate ) {
+        $by_id[ (int) $candidate->term_id ] = $candidate;
+        if ( (int) $candidate->count > 0 ) { $populated[] = (int) $candidate->term_id; }
+    }
     $terms = array();
-    foreach ( $ids as $id ) { $term = get_term( $id, $taxonomy ); if ( $term && ! is_wp_error( $term ) ) { $terms[] = array( 'id' => (int) $id, 'label' => $term->name ); } }
+    foreach ( $ids as $id ) {
+        // A parent is non-empty when an included descendant has items, unless
+        // descendants are disabled. Excluded descendants cannot populate it.
+        $filter_ids = bsml_expand_terms( array( $id ), $taxonomy, $scope['descendants'] );
+        if ( isset( $by_id[ $id ] ) && array_intersect( $filter_ids, $populated ) ) {
+            $terms[] = array( 'id' => (int) $id, 'label' => $by_id[ $id ]->name );
+        }
+    }
     return $terms;
+}
+
+function bsml_term_name( $name ) {
+    $name = trim( html_entity_decode( $name, ENT_QUOTES, 'UTF-8' ) );
+    return function_exists( 'mb_strtolower' ) ? mb_strtolower( $name, 'UTF-8' ) : strtolower( $name );
+}
+function bsml_term_parent_names( $term ) {
+    $names = array();
+    foreach ( array_reverse( get_ancestors( $term->term_id, $term->taxonomy, 'taxonomy' ) ) as $id ) {
+        $parent = get_term( $id, $term->taxonomy );
+        if ( $parent && ! is_wp_error( $parent ) ) { $names[] = bsml_term_name( $parent->name ); }
+    }
+    return $names;
+}
+function bsml_related_categories( $tab, $selected = 0 ) {
+    $ids = bsml_ids( $tab['related'] );
+    $source_ids = $selected ? array( $selected ) : array_diff(
+        bsml_expand_terms( $tab['include'], $tab['taxonomy'], $tab['descendants'] ),
+        bsml_expand_terms( $tab['exclude'], $tab['taxonomy'], $tab['exclude_descendants'] )
+    );
+    $products = get_terms( array( 'taxonomy' => 'product_cat', 'hide_empty' => false ) );
+    $by_name = array();
+    foreach ( is_wp_error( $products ) ? array() : $products as $category ) { $by_name[ bsml_term_name( $category->name ) ][] = $category; }
+    foreach ( $source_ids as $id ) {
+        // Explicit mappings replace automatic matching, never the additional categories.
+        if ( array_key_exists( $id, $tab['filter_map'] ) ) { $ids = array_merge( $ids, bsml_ids( $tab['filter_map'][ $id ] ) ); continue; }
+        $topic = get_term( $id, $tab['taxonomy'] );
+        if ( ! $topic || is_wp_error( $topic ) ) { continue; }
+        $matches = $by_name[ bsml_term_name( $topic->name ) ] ?? array();
+        if ( count( $matches ) > 1 ) {
+            $parents = bsml_term_parent_names( $topic );
+            $matches = array_values( array_filter( $matches, function ( $match ) use ( $parents ) { return bsml_term_parent_names( $match ) === $parents; } ) );
+        }
+        // Ambiguous names require an explicit mapping; do not guess a branch.
+        if ( count( $matches ) === 1 ) { $ids[] = (int) $matches[0]->term_id; }
+    }
+    return bsml_ids( $ids );
+}
+
+function bsml_cart_html( $product ) {
+    // Let WooCommerce, the theme, and product extensions own the entire button.
+    if ( null === WC()->cart ) { wc_load_cart(); }
+    $keys = array( 'product', 'post', 'id', 'authordata', 'currentday', 'currentmonth', 'page', 'pages', 'multipage', 'more', 'numpages' );
+    $previous = array();
+    foreach ( $keys as $key ) {
+        if ( array_key_exists( $key, $GLOBALS ) ) { $previous[ $key ] = $GLOBALS[ $key ]; }
+    }
+    $had_uri = isset( $_SERVER['REQUEST_URI'] );
+    $previous_uri = $_SERVER['REQUEST_URI'] ?? '';
+    $buffer_level = ob_get_level();
+    try {
+        $GLOBALS['post'] = get_post( $product->get_id() );
+        if ( $GLOBALS['post'] ) { setup_postdata( $GLOBALS['post'] ); }
+        $GLOBALS['product'] = $product;
+        // Native product classes can append cart arguments to the current URL.
+        // Give them a real product URL instead of the REST endpoint, preserving
+        // their own bundle/variation query parameters and all URL filters.
+        $_SERVER['REQUEST_URI'] = wp_make_link_relative( $product->get_permalink() );
+        ob_start();
+        woocommerce_template_loop_add_to_cart();
+        return ob_get_clean();
+    } finally {
+        while ( ob_get_level() > $buffer_level ) { ob_end_clean(); }
+        foreach ( $keys as $key ) {
+            if ( array_key_exists( $key, $previous ) ) { $GLOBALS[ $key ] = $previous[ $key ]; }
+            else { unset( $GLOBALS[ $key ] ); }
+        }
+        if ( $had_uri ) { $_SERVER['REQUEST_URI'] = $previous_uri; }
+        else { unset( $_SERVER['REQUEST_URI'] ); }
+    }
+}
+
+function bsml_custom_content( $request ) {
+    $section = bsml_content_section( sanitize_key( $request->get_param( 'section' ) ?? '' ), sanitize_key( $request->get_param( 'child' ) ?? '' ) );
+    if ( is_wp_error( $section ) ) { return $section; }
+    if ( $section['type'] !== 'content' ) { return new WP_Error( 'bsml_content_type', 'This section does not contain custom content.', array( 'status' => 400 ) ); }
+    global $shortcode_tags;
+    $library_shortcode = $shortcode_tags['bs_my_library'] ?? null;
+    add_shortcode( 'bs_my_library', '__return_empty_string' );
+    try {
+        $html = bsml_render_custom_content( $section['content'] );
+        // Return only enqueued assets, never global page head/footer hooks.
+        ob_start();
+        wp_styles()->do_items();
+        wp_scripts()->do_items( false, 1 );
+        $assets = ob_get_clean();
+    } finally {
+        if ( $library_shortcode ) { add_shortcode( 'bs_my_library', $library_shortcode ); }
+        else { remove_shortcode( 'bs_my_library' ); }
+    }
+    return array( 'html' => $html, 'assets' => $assets );
+}
+
+function bsml_render_custom_content( $content ) {
+    $has_blocks = has_blocks( $content );
+    $content = do_blocks( $content );
+    if ( ! $has_blocks ) { $content = wpautop( $content ); }
+    return do_shortcode( shortcode_unautop( $content ) );
+}
+
+function bsml_library_post_type( $taxonomy ) {
+    return $taxonomy === 'ld_course_category' ? 'sfwd-courses' : 'clearing';
 }
 
 function bsml_list( $request ) {
@@ -76,12 +193,14 @@ function bsml_list( $request ) {
     foreach ( $settings['tabs'] as $candidate ) { if ( $candidate['id'] === $request->get_param( 'tab' ) && $candidate['enabled'] ) { $tab = $candidate; break; } }
     if ( ! $tab ) { return new WP_Error( 'bsml_tab', 'This section is unavailable.', array( 'status' => 404 ) ); }
     if ( ( in_array( $kind, array( 'library', 'related' ), true ) && $tab['type'] !== 'standard' ) || ( $kind === 'benefit' && $tab['type'] !== 'membership' ) || ( $kind === 'wishlist' && $tab['type'] !== 'wishlist' ) ) { return new WP_Error( 'bsml_kind', 'This list is not part of the selected section.', array( 'status' => 400 ) ); }
+    if ( $kind === 'related' && ! $tab['show_related'] ) { return new WP_Error( 'bsml_related', 'Recommendations are disabled for this section.', array( 'status' => 404 ) ); }
     $is_product = $kind !== 'library';
     if ( $is_product && ! function_exists( 'wc_get_product' ) ) { return new WP_Error( 'bsml_woo', 'WooCommerce is required for this section.', array( 'status' => 503 ) ); }
     $taxonomy = $is_product ? 'product_cat' : $tab['taxonomy'];
     $scope = bsml_scope( $tab );
     $filters = bsml_filters( $tab['taxonomy'], $scope, $tab['filters'] );
     $term = absint( $request->get_param( 'term' ) );
+    if ( $tab['type'] === 'standard' && ! $tab['show_terms'] ) { $filters = array(); $term = 0; }
     $wishlist = bsml_wishlist_rows();
     $wishlist_ids = array_map( 'intval', wp_list_pluck( $wishlist, 'product_id' ) );
     if ( $kind === 'benefit' ) {
@@ -96,10 +215,10 @@ function bsml_list( $request ) {
     }
     if ( $term && ! in_array( $term, wp_list_pluck( $filters, 'id' ), true ) ) { return new WP_Error( 'bsml_term', 'This category filter is unavailable.', array( 'status' => 400 ) ); }
     if ( $kind === 'related' ) {
-        $related = $term && isset( $tab['filter_map'][ $term ] ) ? $tab['filter_map'][ $term ] : $tab['related'];
+        $related = bsml_related_categories( $tab, $term );
         $scope = array( 'include' => $related, 'exclude' => $tab['related_exclude'], 'descendants' => $tab['related_descendants'], 'exclude_descendants' => $tab['related_exclude_descendants'] );
     }
-    $args = array( 'post_type' => $is_product ? 'product' : 'clearing', 'post_status' => 'publish', 'fields' => 'ids', 'posts_per_page' => 200, 'paged' => 1, 'orderby' => 'ID', 'order' => 'ASC', 'cache_results' => false, 'update_post_meta_cache' => false, 'update_post_term_cache' => false, 'no_found_rows' => true, 's' => mb_substr( sanitize_text_field( $request->get_param( 'search' ) ?? '' ), 0, 150 ) );
+    $args = array( 'post_type' => $is_product ? 'product' : bsml_library_post_type( $taxonomy ), 'post_status' => 'publish', 'fields' => 'ids', 'posts_per_page' => 200, 'paged' => 1, 'orderby' => 'ID', 'order' => 'ASC', 'cache_results' => false, 'update_post_meta_cache' => false, 'update_post_term_cache' => false, 'no_found_rows' => true, 's' => mb_substr( sanitize_text_field( $request->get_param( 'search' ) ?? '' ), 0, 150 ) );
     if ( $kind === 'wishlist' ) {
         if ( ! defined( 'WEBTOFFEE_WISHLIST_BASEURL' ) ) { return new WP_Error( 'bsml_wishlist', 'WebToffee Wishlist is not active.', array( 'status' => 503 ) ); }
         $args['post__in'] = $wishlist_ids ?: array( 0 );
@@ -124,7 +243,8 @@ function bsml_list( $request ) {
             if ( $kind === 'benefit' && ( $accessible || bsml_purchased( $id ) ) ) { continue; }
             if ( $kind === 'benefit' && ( ! bsml_product_clearings( $id ) || ! get_post_meta( $id, 'hlwpw_location_tags', true ) ) ) { continue; }
             $event_product = $is_product ? $id : absint( get_post_meta( $id, '_sa_related_product', true ) );
-            $item = array( 'id' => (int) $id, 'title' => html_entity_decode( get_the_title( $id ), ENT_QUOTES, get_bloginfo( 'charset' ) ), 'date' => get_post_field( 'post_date_gmt', $id ), 'event' => get_post_meta( $event_product, '_sa_event_date', true ), 'image' => get_the_post_thumbnail_url( $id, 'medium_large' ) ?: '', 'url' => get_permalink( $id ), 'clearing' => $is_product ? 0 : (int) $id, 'price' => $product ? (float) $product->get_price() : 0, 'priceHtml' => $product ? wp_kses_post( $product->get_price_html() ) : '', 'wishlisted' => in_array( (int) $id, $wishlist_ids, true ) );
+            $item = array( 'id' => (int) $id, 'title' => html_entity_decode( get_the_title( $id ), ENT_QUOTES, get_bloginfo( 'charset' ) ), 'date' => get_post_field( 'post_date_gmt', $id ), 'event' => get_post_meta( $event_product, '_sa_event_date', true ), 'image' => get_the_post_thumbnail_url( $id, 'medium_large' ) ?: '', 'url' => get_permalink( $id ), 'clearing' => ! $is_product && $args['post_type'] === 'clearing' ? (int) $id : 0, 'postType' => $args['post_type'], 'price' => $product ? (float) $product->get_price() : 0, 'priceHtml' => $product ? wp_kses_post( $product->get_price_html() ) : '', 'wishlisted' => in_array( (int) $id, $wishlist_ids, true ) );
+            if ( $kind === 'related' ) { $item['cartHtml'] = bsml_cart_html( $product ); }
             if ( $accessible ) { foreach ( bsml_product_clearings( $id ) as $cid ) { if ( bsml_has_access( $cid ) ) { $item['clearing'] = $cid; break; } } }
             $items[] = $item;
         }

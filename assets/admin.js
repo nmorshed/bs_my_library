@@ -23,6 +23,7 @@
             const taxonomy = row.querySelector('.bsml-taxonomy');
             if (taxonomy && !taxonomy.dataset.previous) taxonomy.dataset.previous = taxonomy.value;
         });
+        root.querySelectorAll('[data-membership-toggle]').forEach(group => { group.hidden = !document.getElementById(group.dataset.membershipToggle).checked; });
         root.querySelectorAll('.bsml-content-editor').forEach(textarea => {
             if (textarea.dataset.editorReady || !textarea.getClientRects().length) return;
             textarea.id = textarea.id || 'bsml-editor-' + next++;
@@ -83,7 +84,12 @@
             const query = event.target.value.toLowerCase();
             for (const option of event.target.nextElementSibling.options) option.hidden = !option.text.toLowerCase().includes(query) && !option.selected;
         }
-        if (event.target.name && event.target.name.endsWith('[label]')) owner(event.target).querySelector('summary').textContent = event.target.value || 'Untitled section';
+        if (event.target.name && event.target.name.endsWith('[label]')) {
+            const row = owner(event.target);
+            if (row) row.querySelector('summary').textContent = event.target.value || 'Untitled section';
+            const tier = event.target.closest('.bsml-tier-card');
+            if (tier) tier.querySelector('summary strong').textContent = event.target.value || 'Untitled tier';
+        }
     });
     form.addEventListener('change', async function (event) {
         refresh(form);

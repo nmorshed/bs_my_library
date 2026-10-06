@@ -2,19 +2,21 @@
 /**
  * Plugin Name: BS My Library
  * Description: Searchable member library, inline clearings, and GHL-authoritative membership claims.
- * Version: 1.1.4
+ * Version: 1.2.7
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Text Domain: bs-my-library
  */
 defined( 'ABSPATH' ) || exit;
-define( 'BSML_VERSION', '1.1.4' );
+define( 'BSML_VERSION', '1.2.7' );
 define( 'BSML_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BSML_URL', plugin_dir_url( __FILE__ ) );
 require_once BSML_DIR . 'includes/settings.php';
 require_once BSML_DIR . 'includes/membership.php';
 require_once BSML_DIR . 'includes/library.php';
+require_once BSML_DIR . 'includes/account.php';
 require_once BSML_DIR . 'includes/admin.php';
+require_once BSML_DIR . 'includes/appointment-calendars.php';
 
 register_activation_hook( __FILE__, 'bsml_install' );
 add_action( 'plugins_loaded', function () {
@@ -32,8 +34,20 @@ function bsml_no_cache() {
 
 add_action( 'template_redirect', function () {
     $settings = bsml_settings();
-    if ( isset( $_GET['bsml_embed'] ) || ( is_singular() && ( has_shortcode( get_post_field( 'post_content', get_queried_object_id() ), 'bs_my_library' ) || in_array( get_queried_object_id(), $settings['pages'], true ) ) ) ) {
+    if ( isset( $_GET['bsml_page'] ) || isset( $_GET['bsml_embed'] ) || ( is_singular() && ( has_shortcode( get_post_field( 'post_content', get_queried_object_id() ), 'bs_my_library' ) || in_array( get_queried_object_id(), $settings['pages'], true ) ) ) ) {
         bsml_no_cache();
+    }
+    if ( isset( $_GET['bsml_page'] ) ) {
+        if ( ! is_user_logged_in() ) { auth_redirect(); exit; }
+        $section = bsml_content_section( sanitize_key( wp_unslash( $_GET['bsml_page'] ) ), sanitize_key( wp_unslash( $_GET['bsml_child'] ?? '' ) ) );
+        if ( is_wp_error( $section ) || $section['type'] !== 'page' || (int) $section['page_id'] !== get_queried_object_id() ) {
+            wp_die( 'This page is not available to your account.', 'Access unavailable', array( 'response' => 403 ) );
+        }
+        // Older saved links respect the current content-only setting.
+        $GLOBALS['bsml_content_section'] = $section;
+        header( 'X-Frame-Options: SAMEORIGIN' );
+        include BSML_DIR . 'templates/embed.php';
+        exit;
     }
     if ( ! isset( $_GET['bsml_embed'] ) ) { return; }
     if ( ! is_user_logged_in() ) { auth_redirect(); exit; }
@@ -85,7 +99,7 @@ add_shortcode( 'bs_my_library', function () {
 } );
 
 add_action( 'rest_api_init', function () {
-    foreach ( array( 'list' => 'bsml_list', 'membership' => 'bsml_membership_state', 'history' => 'bsml_history', 'content' => 'bsml_custom_content' ) as $route => $callback ) {
+    foreach ( array( 'list' => 'bsml_list', 'membership' => 'bsml_membership_state', 'history' => 'bsml_history', 'content' => 'bsml_custom_content', 'appointment' => 'bsml_appointment_content' ) as $route => $callback ) {
         register_rest_route( 'bsml/v1', '/' . $route, array( 'methods' => 'GET', 'callback' => $callback, 'permission_callback' => 'bsml_permission' ) );
     }
     register_rest_route( 'bsml/v1', '/claim', array( 'methods' => 'POST', 'callback' => 'bsml_claim', 'permission_callback' => 'bsml_permission' ) );

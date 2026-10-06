@@ -56,7 +56,7 @@ function bsml_membership_state( $request = null ) {
         }
     }
     $has_pending = (bool) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$wpdb->prefix}bsml_claims WHERE user_id=%d AND status='pending' LIMIT 1", get_current_user_id() ) );
-    return array( 'tier' => $tier ? $tier['label'] : null, 'benefits' => $benefits, 'pending' => $has_pending,
+    return array( 'tier' => $tier ? $tier['label'] : null, 'nonMemberContent' => $tier ? '' : wpautop( wp_kses_post( $settings['membership_guest_content'] ) ), 'benefits' => $benefits, 'pending' => $has_pending,
         'appointment' => array( 'eligible' => $tier && $tier['appointment'], 'booked' => in_array( $settings['appointment_tag'], $contact['tags'], true ) ) );
 }
 

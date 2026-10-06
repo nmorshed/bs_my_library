@@ -155,12 +155,29 @@ function bsml_cart_html( $product ) {
 function bsml_custom_content( $request ) {
     $section = bsml_content_section( sanitize_key( $request->get_param( 'section' ) ?? '' ), sanitize_key( $request->get_param( 'child' ) ?? '' ) );
     if ( is_wp_error( $section ) ) { return $section; }
-    if ( $section['type'] !== 'content' ) { return new WP_Error( 'bsml_content_type', 'This section does not contain custom content.', array( 'status' => 400 ) ); }
+    if ( ! in_array( $section['type'], array( 'content', 'page' ), true ) ) { return new WP_Error( 'bsml_content_type', 'This section does not contain custom content.', array( 'status' => 400 ) ); }
+    return bsml_render_content_payload( $section );
+}
+
+function bsml_appointment_content() {
+    $state = bsml_membership_state();
+    if ( is_wp_error( $state ) ) { return $state; }
+    if ( empty( $state['appointment']['eligible'] ) ) {
+        return new WP_Error( 'bsml_appointment', 'This benefit is not available to your account.', array( 'status' => 403 ) );
+    }
+    $settings = bsml_settings();
+    $booked = ! empty( $state['appointment']['booked'] );
+    $content = $settings[ $booked ? 'appointment_booked' : 'appointment_available' ];
+    if ( ! $content ) { $content = $booked ? '<p>Your accelerator session has been booked for this cycle.</p>' : '<p>Booking instructions will appear here when configured.</p>'; }
+    return bsml_render_content_payload( array( 'type' => 'content', 'content' => $content ) );
+}
+
+function bsml_render_content_payload( $section ) {
     global $shortcode_tags;
     $library_shortcode = $shortcode_tags['bs_my_library'] ?? null;
     add_shortcode( 'bs_my_library', '__return_empty_string' );
     try {
-        $html = bsml_render_custom_content( $section['content'] );
+        $html = $section['type'] === 'page' ? bsml_render_page_content( $section['page_id'] ) : bsml_render_custom_content( $section['content'] );
         // Return only enqueued assets, never global page head/footer hooks.
         ob_start();
         wp_styles()->do_items();
@@ -171,6 +188,33 @@ function bsml_custom_content( $request ) {
         else { remove_shortcode( 'bs_my_library' ); }
     }
     return array( 'html' => $html, 'assets' => $assets );
+}
+
+function bsml_render_page_content( $page_id ) {
+    $keys = array( 'wp_query', 'wp_the_query', 'post', 'id', 'authordata', 'currentday', 'currentmonth', 'page', 'pages', 'multipage', 'more', 'numpages' );
+    $previous = array();
+    foreach ( $keys as $key ) { if ( array_key_exists( $key, $GLOBALS ) ) { $previous[$key] = $GLOBALS[$key]; } }
+    $had_uri = isset( $_SERVER['REQUEST_URI'] ); $uri = $_SERVER['REQUEST_URI'] ?? '';
+    $level = ob_get_level();
+    try {
+        $GLOBALS['wp_query'] = new WP_Query( array( 'page_id' => $page_id, 'post_type' => 'page', 'post_status' => 'publish', 'cache_results' => false ) );
+        $GLOBALS['wp_the_query'] = $GLOBALS['wp_query'];
+        $_SERVER['REQUEST_URI'] = wp_make_link_relative( get_permalink( $page_id ) );
+        ob_start();
+        while ( have_posts() ) {
+            the_post();
+            if ( ! did_action( 'wp_enqueue_scripts' ) ) { wp_enqueue_scripts(); }
+            the_content();
+        }
+        return ob_get_clean();
+    } finally {
+        while ( ob_get_level() > $level ) { ob_end_clean(); }
+        foreach ( $keys as $key ) {
+            if ( array_key_exists( $key, $previous ) ) { $GLOBALS[$key] = $previous[$key]; }
+            else { unset( $GLOBALS[$key] ); }
+        }
+        if ( $had_uri ) { $_SERVER['REQUEST_URI'] = $uri; } else { unset( $_SERVER['REQUEST_URI'] ); }
+    }
 }
 
 function bsml_render_custom_content( $content ) {

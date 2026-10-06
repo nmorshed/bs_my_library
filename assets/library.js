@@ -174,20 +174,19 @@
         document.head.appendChild(node);
         node.remove();
     }
-    function CustomContent({section, child, revision}) {
-        const params = new URLSearchParams({section, child: child || ''});
-        const result = useResource('content?' + params, revision);
+    function RenderedContent({data, onReady}) {
         const container = useRef(null);
+        const ready = useRef(onReady); ready.current = onReady;
         const [assetError, setAssetError] = useState(null);
         useEffect(function () {
-            if (!result.data || !container.current) return;
+            if (!data || !container.current) return;
             let active = true;
             const node = container.current;
             setAssetError(null);
             const content = document.createElement('template');
-            content.innerHTML = result.data.html || '';
+            content.innerHTML = data.html || '';
             const assets = document.createElement('template');
-            assets.innerHTML = result.data.assets || '';
+            assets.innerHTML = data.assets || '';
             const scripts = [];
             for (const fragment of [assets.content, content.content]) {
                 fragment.querySelectorAll('script').forEach(script => {
@@ -204,16 +203,115 @@
             (async function () {
                 try {
                     for (const script of scripts) { if (!active) return; await loadContentScript(script); }
-                    if (active) node.dispatchEvent(new CustomEvent('bsml:content-ready', {bubbles: true}));
+                    if (active) { node.dispatchEvent(new CustomEvent('bsml:content-ready', {bubbles: true})); if (ready.current) ready.current(node); }
                 } catch (error) { if (active) setAssetError(error); }
             })();
             return () => { active = false; node.dispatchEvent(new CustomEvent('bsml:content-unmount', {bubbles: true})); node.replaceChildren(); };
-        }, [result.data]);
+        }, [data]);
+        return h(wp.element.Fragment, null,
+            assetError && h('p', {className: 'bsml-message bsml-error', role: 'alert'}, assetError.message),
+            h('div', {ref: container}));
+    }
+    function CustomContent({section, child, revision, resource}) {
+        const params = new URLSearchParams({section, child: child || ''});
+        const result = useResource(resource || 'content?' + params, revision);
         return h('section', {className: 'bsml-custom-content', 'aria-busy': result.loading},
             result.loading && h('p', {role: 'status'}, 'Loading content…'),
             result.error && h(ErrorBox, {error: result.error, retry: result.retry}),
-            assetError && h(ErrorBox, {error: assetError, retry: result.retry}),
-            h('div', {ref: container}));
+            h(RenderedContent, {data: result.data}));
+    }
+    function accountUrl(base, value) {
+        const url = new URL(base, location.href);
+        if (value) {
+            const queryKey = Array.from(url.searchParams.keys()).find(key => url.searchParams.get(key) === '');
+            if (queryKey) url.searchParams.set(queryKey, value);
+            else url.pathname = url.pathname.replace(/\/$/, '') + '/' + encodeURIComponent(value) + '/';
+        }
+        return url;
+    }
+    function accountLink(url, routes) {
+        if (url.searchParams.has('_wpnonce') || url.searchParams.has('cancel_order') || url.searchParams.has('pay_for_order')) return null;
+        for (const [endpoint, base] of Object.entries(routes).sort(([a], [b]) => a === 'dashboard' ? 1 : b === 'dashboard' ? -1 : 0)) {
+            const root = new URL(base, location.href);
+            if (url.origin !== root.origin) continue;
+            const queryKey = Array.from(root.searchParams.keys()).find(key => root.searchParams.get(key) === '');
+            if (queryKey) {
+                if (url.pathname === root.pathname && url.searchParams.has(queryKey)) return {endpoint, value: url.searchParams.get(queryKey)};
+            } else {
+                const path = root.pathname.replace(/\/$/, '');
+                if (url.pathname.replace(/\/$/, '') === path && Array.from(root.searchParams).every(([key, value]) => url.searchParams.get(key) === value) && (endpoint !== 'dashboard' || Array.from(url.searchParams.keys()).every(key => root.searchParams.has(key)))) return {endpoint, value: ''};
+                if (endpoint !== 'dashboard' && url.pathname.startsWith(path + '/')) return {endpoint, value: decodeURIComponent(url.pathname.slice(path.length + 1).replace(/\/$/, ''))};
+            }
+        }
+        return null;
+    }
+    function Account({tab, endpoint, value, revision, onNavigate}) {
+        const [state, setState] = useState({data: null, loading: true, error: null});
+        const [saving, setSaving] = useState(false);
+        const [retry, setRetry] = useState(0);
+        const responseKey = useRef(null);
+        const alive = useRef(true);
+        const routes = tab.accountRoutes || {};
+        useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+        async function request(url, options) {
+            url.searchParams.set('bsml_account', tab.id);
+            const response = await fetch(url.href, Object.assign({credentials: 'same-origin', cache: 'no-store', headers: {Accept: 'application/json'}}, options));
+            const data = await response.json().catch(() => { throw new Error('The account screen could not load. Please refresh or open WooCommerce My Account.'); });
+            if (!response.ok) throw new Error(data.message || 'Your account could not load.');
+            if (typeof data.html !== 'string') throw new Error('Unexpected account response. Please refresh.');
+            if (data.nonce) config.nonce = data.nonce;
+            return data;
+        }
+        useEffect(function () {
+            const key = endpoint + ':' + value + ':' + revision + ':' + retry;
+            if (responseKey.current === key) { responseKey.current = null; return; }
+            if (!routes[endpoint]) { setState({data: null, loading: false, error: null}); return; }
+            const controller = new AbortController();
+            setState({data: null, loading: true, error: null});
+            request(accountUrl(routes[endpoint], value), {signal: controller.signal}).then(data => setState({data, loading: false, error: null})).catch(error => {
+                if (error.name !== 'AbortError') setState({data: null, loading: false, error});
+            });
+            return () => controller.abort();
+        }, [tab.id, endpoint, value, revision, retry]);
+        function click(event) {
+            const link = event.target.closest('a');
+            if (!link || link.hasAttribute('data-bsml-account-native') || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || link.target === '_blank' || link.hasAttribute('download')) return;
+            const route = accountLink(new URL(link.href), routes);
+            if (route) { event.preventDefault(); if (!saving) onNavigate(route.endpoint, route.value); }
+        }
+        async function submit(event) {
+            const form = event.target;
+            const action = form.querySelector('input[name="action"]');
+            if (!action || !['edit_address', 'save_account_details'].includes(action.value)) return;
+            event.preventDefault();
+            if (saving || !state.data) return;
+            const body = new FormData(form);
+            const submitter = event.nativeEvent.submitter;
+            if (submitter && submitter.name) body.set(submitter.name, submitter.value);
+            setSaving(true);
+            try {
+                const data = await request(new URL(state.data.url), {method: 'POST', body});
+                if (!alive.current) return;
+                setState({data, loading: false, error: null});
+                if (data.endpoint !== endpoint || data.value !== value) {
+                    responseKey.current = data.endpoint + ':' + data.value + ':' + revision + ':' + retry;
+                    onNavigate(data.endpoint, data.value, true);
+                }
+            } catch (error) {
+                if (alive.current) setState(previous => ({...previous, error: new Error(error.message + ' Refresh before submitting again if you are unsure whether it saved.')}));
+            } finally { if (alive.current) setSaving(false); }
+        }
+        function ready(node) {
+            node.querySelectorAll('form').forEach(form => { if (!form.getAttribute('action')) form.action = state.data.url; });
+            if (window.jQuery) window.jQuery(node).find('select.country_to_state').trigger('change');
+        }
+        return h('section', {className: 'bsml-account-panel woocommerce', 'aria-busy': state.loading || saving, onClick: click, onSubmit: submit},
+            state.loading && h('p', {role: 'status'}, 'Loading your account…'),
+            state.error && h(ErrorBox, {error: state.error, retry: () => setRetry(n => n + 1)}),
+            !routes[endpoint] && h('p', {className: 'bsml-message'}, 'No account screens are enabled for this section.'),
+            saving && h('p', {role: 'status'}, 'Saving your changes…'),
+            h('fieldset', {disabled: saving, className: 'bsml-account-fields'}, h(RenderedContent, {data: state.data, onReady: ready})),
+            h('a', {className: 'bsml-account-native-link', 'data-bsml-account-native': true, href: tab.accountUrl}, 'Open full WooCommerce account ↗'));
     }
     function Frame({kind, id, revision, source, title}) {
         const ref = useRef(null);
@@ -258,7 +356,7 @@
         }
         return h(wp.element.Fragment, null,
             state.error ? h(ErrorBox, {error: state.error, retry: state.retry}) : state.loading ? h(Skeleton) : h(wp.element.Fragment, null,
-                h('div', {className: 'bsml-membership-intro'}, h('span', {className: 'bsml-eyebrow'}, 'YOUR MEMBERSHIP'), h('h2', null, state.data.tier || 'Explore VIP membership'), h('p', null, state.data.tier ? 'Choose something meaningful for your next step.' : 'Your account does not currently have an eligible membership tier.')),
+                h('div', {className: 'bsml-membership-intro'}, h('span', {className: 'bsml-eyebrow'}, 'YOUR MEMBERSHIP'), state.data.tier ? h(wp.element.Fragment, null, h('h2', null, state.data.tier), h('p', null, 'Choose something meaningful for your next step.')) : h('div', {dangerouslySetInnerHTML: {__html: state.data.nonMemberContent || ''}})),
                 state.data.tier && h('div', {className: 'bsml-benefits'}, ['live', 'replay'].map(key => h('div', {className: 'bsml-benefit', key}, h('span', null, state.data.benefits[key].label), h('strong', null, state.data.benefits[key].remaining), h('span', null, 'of ' + state.data.benefits[key].limit + ' remaining'))),
                     state.data.appointment.eligible && h('div', {className: 'bsml-benefit'}, h('span', null, 'Accelerator session'), h('strong', {className: 'bsml-benefit-status'}, state.data.appointment.booked ? 'Booked' : 'Available'))),
                 state.data.pending && h('p', {className: 'bsml-message', role: 'status'}, 'A claim is awaiting confirmation. Refresh your benefits or contact support before making another selection.'),
@@ -268,7 +366,7 @@
                         toggle: id => setSelection(previous => Object.assign({}, previous, {[key]: previous[key].includes(id) ? previous[key].filter(value => value !== id) : previous[key].concat(id)}))})),
                     h('div', {className: 'bsml-claim-bar'}, h('span', null, selection[key].length + ' selected · ' + state.data.benefits[key].remaining + ' remaining'), h('button', {type: 'button', className: 'bsml-button', disabled: claiming || state.data.pending || !selection[key].length || selection[key].length > state.data.benefits[key].remaining, onClick: () => claim(key)}, claiming ? 'Confirming…' : 'Claim selected items')),
                     state.data.benefits[key].remaining === 0 && h('p', {className: 'bsml-meta'}, 'Your allowance renews after your next payment is processed and synchronized.'))),
-                state.data.appointment.eligible && h('section', {className: 'bsml-section'}, h('h2', null, 'Your accelerator session'), h(Frame, {kind: 'appointment', revision}))),
+                state.data.appointment.eligible && h('section', {className: 'bsml-section'}, h('h2', null, 'Your accelerator session'), h(CustomContent, {resource: 'appointment', revision}))),
             h(History, {query, change, revision, open}));
     }
     function MenuItem({item, active, childId, navigate, index}) {
@@ -278,11 +376,11 @@
         const submenuId = 'bsml-submenu-' + item.id;
         return h('div', {className: 'bsml-nav-group'},
             h('div', {className: 'bsml-nav-parent'},
-                h('button', {type: 'button', 'aria-current': active && !childId ? 'page' : undefined, onClick: () => { setExpanded(true); navigate(item.id); }},
+                h(item.newTab ? 'a' : 'button', item.newTab ? {href: item.url, target: '_blank', rel: 'noopener noreferrer', className: 'bsml-menu-link', 'aria-label': item.label + ' (opens in a new tab)', onClick: () => setExpanded(true)} : {type: 'button', 'aria-current': active && !childId ? 'page' : undefined, onClick: () => { setExpanded(true); navigate(item.id); }},
                     h('span', {className: 'bsml-nav-number', 'aria-hidden': true}, String(index + 1).padStart(2, '0')), item.label),
                 children.length > 0 && h('button', {type: 'button', className: 'bsml-submenu-toggle', 'aria-label': 'Toggle ' + item.label + ' submenu', 'aria-expanded': expanded, 'aria-controls': submenuId, onClick: () => setExpanded(value => !value)}, expanded ? '▴' : '▾')),
             children.length > 0 && h('div', {id: submenuId, className: 'bsml-submenu' + (expanded ? ' is-open' : ''), 'aria-hidden': !expanded},
-                h('div', null, children.map(child => h('button', {key: child.id, type: 'button', tabIndex: expanded ? 0 : -1, 'aria-current': active && childId === child.id ? 'page' : undefined, onClick: () => navigate(item.id, child.id)}, child.label)))));
+                h('div', null, children.map(child => h(child.newTab ? 'a' : 'button', Object.assign({key: child.id, tabIndex: expanded ? 0 : -1}, child.newTab ? {href: child.url, target: '_blank', rel: 'noopener noreferrer', className: 'bsml-menu-link', 'aria-label': child.label + ' (opens in a new tab)'} : {type: 'button', 'aria-current': active && childId === child.id ? 'page' : undefined, onClick: () => navigate(item.id, child.id)}), child.label)))));
     }
     function App() {
         const [query, setQuery] = useState(() => new URLSearchParams(location.search));
@@ -291,8 +389,8 @@
         const browseScroll = useRef(0);
         const restoreScroll = useRef(null);
         const tabs = config.tabs;
-        const tab = tabs.find(t => t.id === query.get('bsml_tab')) || tabs.find(t => t.id === config.defaultTab) || tabs[0];
-        const child = tab && (tab.children || []).find(item => item.id === query.get('bsml_child'));
+        const tab = tabs.find(t => t.id === query.get('bsml_tab')) || tabs.find(t => t.id === config.defaultTab && !t.newTab) || tabs.find(t => !t.newTab) || tabs[0];
+        const child = tab && (tab.children || []).find(item => item.id === query.get('bsml_child')) || (tab && tab.type === 'account' ? (tab.children || []).find(item => !item.external) : null);
         const display = child || tab;
         const clearing = tab && tab.type === 'standard' ? Number(query.get('bsml_clearing')) || 0 : 0;
         const refresh = () => setRevision(value => value + 1);
@@ -314,10 +412,22 @@
             update(next, replace);
         }
         function navigate(id, childId) {
+            const target = tabs.find(item => item.id === id);
+            const sub = target && (target.children || []).find(item => item.id === childId);
+            const destination = sub || target;
+            if (destination && destination.newTab) { window.open(destination.url, '_blank', 'noopener,noreferrer'); return true; }
+            if (sub && sub.external) { location.assign(sub.url); return; }
             const next = new URLSearchParams(location.search);
             Array.from(next.keys()).filter(key => key.startsWith('bsml_')).forEach(key => next.delete(key));
             next.set('bsml_tab', id); if (childId) next.set('bsml_child', childId); update(next); refresh();
             requestAnimationFrame(() => heading.current && heading.current.focus());
+        }
+        function navigateAccount(endpoint, value, replace) {
+            const next = new URLSearchParams(location.search);
+            next.set('bsml_child', endpoint === 'view-order' ? 'orders' : endpoint);
+            next.set('bsml_account_endpoint', endpoint);
+            if (value) next.set('bsml_account_value', value); else next.delete('bsml_account_value');
+            update(next, replace);
         }
         function open(id) {
             browseScroll.current = window.scrollY;
@@ -340,10 +450,13 @@
         return h('div', {className: 'bsml-shell'},
             h('aside', {className: 'bsml-sidebar'}, h('div', {className: 'bsml-brand'}, h('span', {className: 'bsml-eyebrow'}, 'A SPACE FOR YOUR GROWTH'), h('strong', null, 'My Library')),
                 h('nav', {'aria-label': 'Library sections', className: 'bsml-desktop-nav'}, tabs.map((item, index) => h(MenuItem, {key: item.id, item, index, active: item.id === tab.id, childId: child && child.id, navigate}))),
-                h('label', {className: 'bsml-mobile-nav'}, h('span', {className: 'bsml-sr'}, 'Library section'), h('select', {value: tab.id + (child ? '/' + child.id : ''), onChange: e => { const parts = e.target.value.split('/'); navigate(parts[0], parts[1]); }}, tabs.flatMap(item => [h('option', {value: item.id, key: item.id}, item.label)].concat((item.children || []).map(sub => h('option', {value: item.id + '/' + sub.id, key: item.id + '/' + sub.id}, '— ' + sub.label))))))),
+                h('label', {className: 'bsml-mobile-nav'}, h('span', {className: 'bsml-sr'}, 'Library section'), h('select', {value: tab.id + (child ? '/' + child.id : ''), onChange: e => { const parts = e.target.value.split('/'); if (navigate(parts[0], parts[1])) e.target.value = tab.id + (child ? '/' + child.id : ''); }}, tabs.flatMap(item => [h('option', {value: item.id, key: item.id}, item.label + (item.newTab ? ' ↗' : ''))].concat((item.children || []).map(sub => h('option', {value: item.id + '/' + sub.id, key: item.id + '/' + sub.id}, '— ' + sub.label + (sub.newTab ? ' ↗' : '')))))))),
             h('main', {className: 'bsml-main'}, h('header', {className: 'bsml-header'}, h('div', null, h('span', {className: 'bsml-eyebrow'}, clearing ? 'YOUR VIEWING SPACE' : 'WELCOME TO YOUR COLLECTION'), h('h1', {ref: heading, tabIndex: -1}, display.label)), h('button', {type: 'button', className: 'bsml-refresh', onClick: refresh}, 'Refresh')),
                 clearing ? h('section', {className: 'bsml-viewer'}, h('div', {className: 'bsml-viewer-nav'}, h('button', {type: 'button', onClick: back}, '← Back to ' + tab.label), h('a', {href: config.embed + (config.embed.includes('?') ? '&' : '?') + 'post_type=clearing&p=' + clearing, target: '_blank', rel: 'noopener'}, 'Open page ↗')), h(Frame, {kind: 'clearing', id: clearing, revision})) :
+                    tab.type === 'account' ? h(Account, {key: tab.id, tab, endpoint: query.get('bsml_account_endpoint') || (child && child.id) || '', value: query.get('bsml_account_value') || '', revision, onNavigate: navigateAccount}) :
                     display.type === 'content' ? h(CustomContent, {key: tab.id + '/' + (child ? child.id : ''), section: tab.id, child: child && child.id, revision}) :
+                    display.type === 'page' && display.newTab ? h('p', {className: 'bsml-message'}, h('a', {href: display.url, target: '_blank', rel: 'noopener noreferrer'}, 'Open ' + display.label + ' in a new tab ↗')) :
+                    display.type === 'page' && display.contentOnly !== false ? h(CustomContent, {key: tab.id + '/' + (child ? child.id : ''), section: tab.id, child: child && child.id, revision}) :
                     display.type === 'page' ? h(Frame, {kind: 'section', id: tab.id + (child ? '/' + child.id : ''), source: display.url, title: display.label, revision}) :
                     tab.type === 'membership' ? h(Membership, Object.assign({key: tab.id}, props)) : tab.type === 'wishlist' ? h(List, Object.assign({key: tab.id, kind: 'wishlist', prefix: 'wishlist', title: 'Your saved products'}, props)) : h(wp.element.Fragment, {key: tab.id},
                         h(List, Object.assign({kind: 'library', prefix: 'library', title: 'Available in your library'}, props)),

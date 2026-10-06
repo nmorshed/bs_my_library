@@ -7,13 +7,38 @@ const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
 const wp = path.resolve(root, '../../../wp-includes/js');
 const calls = [];
-let claims = 0, saved = true, cartAdds = 0;
+let appointmentBooked = false, claims = 0, saved = true, cartAdds = 0, accountSaves = 0;
 const items = Array.from({length: 25}, (_, i) => ({id: i + 1, title: 'Clearing ' + String(i + 1).padStart(2, '0'), date: '2026-09-01', event: '', image: '', url: '#product', clearing: i + 1, price: 20 + i, priceHtml: '$' + (20 + i), wishlisted: saved}));
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname === '/admin-fixture') {
+    if (url.pathname.startsWith('/native-account')) {
+        const parts = url.pathname.split('/').filter(Boolean);
+        let endpoint = parts[1] || 'dashboard', value = parts[2] || '';
+        function respond(postBody = '') {
+            let notice = '';
+            if (req.method === 'POST') {
+                assert(postBody.includes('fixture-nonce'), 'Native form nonce is submitted');
+                accountSaves++;
+                notice = '<div class="woocommerce-message" role="alert">Account saved successfully</div>';
+                if (endpoint === 'edit-address') value = '';
+            }
+            const base = 'http://' + req.headers.host + '/native-account/';
+            const routes = Object.fromEntries(['dashboard','orders','view-order','edit-address','payment-methods','edit-account'].map(key => [key, base + (key === 'dashboard' ? '' : key + '/')]));
+            let html = '<p>Hello, member.</p><a href="' + routes.orders + '">Recent orders</a>';
+            if (endpoint === 'orders') html = '<table class="shop_table shop_table_responsive woocommerce-orders-table"><thead><tr><th>Order</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead><tbody><tr><td data-title="Order">#123</td><td data-title="Status">Completed</td><td data-title="Total">$45.00</td><td data-title="Actions"><a class="button" href="' + routes['view-order'] + '123/">View order</a></td></tr></tbody></table>';
+            if (endpoint === 'view-order') html = '<h2>Order #' + value + '</h2><p>Order details</p><a href="' + routes.orders + '">Back to orders</a>';
+            if (endpoint === 'edit-account') html = '<form method="post"><p class="form-row"><label for="fixture-first">First name</label><input id="fixture-first" name="account_first_name" value="Member"></p><input type="hidden" name="action" value="save_account_details"><input type="hidden" name="save-account-details-nonce" value="fixture-nonce"><button type="submit">Save changes</button></form>';
+            if (endpoint === 'edit-address') html = value ? '<form method="post"><p class="form-row"><label for="fixture-city">City</label><input id="fixture-city" name="billing_city"></p><input type="hidden" name="action" value="edit_address"><input type="hidden" name="woocommerce-edit-address-nonce" value="fixture-nonce"><button type="submit">Save address</button></form>' : '<div class="woocommerce-Addresses"><div class="woocommerce-Address"><h2>Billing address</h2><address>Member address</address><a href="' + routes['edit-address'] + 'billing/">Edit billing address</a></div></div>';
+            if (endpoint === 'payment-methods') html = '<p>No saved payment methods.</p><a class="button" href="' + base + 'add-payment-method/">Add payment method</a>';
+            res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store');
+            res.end(JSON.stringify({html:notice + html, assets:'', endpoint, value, url:routes[endpoint] + (value ? value + '/' : ''), routes, nonce:'fresh-fixture-nonce'}));
+        }
+        if (req.method === 'POST') { let body = ''; req.on('data', chunk => body += chunk); req.on('end', () => respond(body)); } else respond();
+        return;
+    }
+    if (['/admin-fixture', '/membership-admin-fixture'].includes(url.pathname)) {
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.end('<link rel="stylesheet" href="/assets/admin.css">' + fs.readFileSync('/private/tmp/bsml-admin-fixture.html', 'utf8') + '<script>window.wp={editor:{initialize(){},remove(){}}};window.ajaxurl="/admin-ajax";window.BSMLAdmin={nonce:"test"};</script><script src="/assets/admin.js"></script>'); return;
+        res.end('<link rel="stylesheet" href="/assets/admin.css">' + fs.readFileSync('/private/tmp/bsml-' + (url.pathname === '/membership-admin-fixture' ? 'membership-admin' : 'admin') + '-fixture.html', 'utf8') + '<script>window.wp={editor:{initialize(){},remove(){}}};window.ajaxurl="/admin-ajax";window.BSMLAdmin={nonce:"test"};</script><script src="/assets/admin.js"></script>'); return;
     }
     if (url.pathname === '/admin-ajax') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({success:true,data:{terms:[{id:url.searchParams.get('taxonomy') === 'topic' ? 11 : 23,label:url.searchParams.get('taxonomy') === 'topic' ? 'Topic term' : 'Program term'}],attached:url.searchParams.get('taxonomy') === 'topic'}})); return; }
     if (url.pathname.startsWith('/assets/')) { res.setHeader('Content-Type', url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(fs.readFileSync(path.join(root, url.pathname))); return; }
@@ -26,8 +51,9 @@ const server = http.createServer((req, res) => {
     if (url.pathname.startsWith('/api/')) {
         calls.push(url.href); res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store');
         if (url.pathname === '/api/content') { res.end(JSON.stringify({html:'<p class="inline-fixture">Custom text: ' + (url.searchParams.get('child') || 'welcome') + '</p><script>document.querySelector(".inline-fixture").dataset.initialized="yes";</script>',assets:'<script src="/shortcode-fixture.js"></script>'})); return; }
+        if (url.pathname === '/api/appointment') { res.end(JSON.stringify({html:'<p class="appointment-fixture">' + (appointmentBooked ? 'Your appointment is booked' : 'Book your appointment') + '</p>',assets:''})); return; }
         if (url.pathname === '/api/claim') { claims++; setTimeout(() => res.end('{"confirmed":true}'), 150); return; }
-        if (url.pathname === '/api/membership') { res.end(JSON.stringify({tier: 'Level 3', pending: false, benefits: {live: {label: 'Live GEC', remaining: 2 - claims, used: claims, limit: 2, configured: true}, replay: {label: 'Replays', remaining: 3, used: 0, limit: 3, configured: true}}, appointment: {eligible: true, booked: false}})); return; }
+        if (url.pathname === '/api/membership') { res.end(JSON.stringify({tier: 'Level 3', pending: false, benefits: {live: {label: 'Live GEC', remaining: 2 - claims, used: claims, limit: 2, configured: true}, replay: {label: 'Replays', remaining: 3, used: 0, limit: 3, configured: true}}, appointment: {eligible: true, booked: appointmentBooked}})); return; }
         if (url.pathname === '/api/history') { res.end(JSON.stringify({items: claims ? [{id: 1, title: 'Clearing 01', benefit: 'live', clearing: 1, displayDate: 'September 28, 2026', status: 'confirmed'}] : [], page: 1, pages: 1, total: claims})); return; }
         const kind = url.searchParams.get('kind');
         let found = items.map(item => ({...item, wishlisted: saved, clearing: kind === 'related' || kind === 'wishlist' ? 0 : item.clearing}));
@@ -44,7 +70,7 @@ const server = http.createServer((req, res) => {
     res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>My Library test fixture</title><style>body{margin:20px;font-family:Arial,sans-serif}</style><link rel="stylesheet" href="/assets/library.css"><div class="bsml-root"></div>
 <script src="/vendor/dist/vendor/react.js"></script><script src="/vendor/dist/vendor/react-dom.js"></script><script src="/vendor/dist/escape-html.js"></script><script src="/vendor/dist/element.js"></script>
 <script src="/vendor/jquery/jquery.js"></script><script>window.wc_add_to_cart_params={wc_ajax_url:'/cart/%%endpoint%%',cart_url:'/cart',cart_redirect_after_add:'no',is_cart:false,i18n_view_cart:'View cart'};</script><script src="/woo-cart.js"></script>
-<script>window.wp.apiFetch=async function(o){let r=await fetch(o.url,{...o,headers:{...o.headers,'Content-Type':'application/json'},body:o.data?JSON.stringify(o.data):undefined});if(!r.ok)throw await r.json();return r.json()};window.BSML={root:'/api/',nonce:'fixture',tabs:[{id:'clearings',label:'My Clearings',type:'standard',sort:'newest'},{id:'vip',label:'My VIP Membership',type:'membership',sort:'newest'},{id:'wishlist',label:'My Wishlist',type:'wishlist',sort:'newest'},{id:'programs',label:'My Programs',type:'standard',show_related:false},{id:'quiet',label:'Quiet library',type:'standard',show_related:false,show_terms:false},{id:'welcome',label:'Welcome',type:'content',url:location.origin+'/?bsml_embed=section&bsml_section=welcome',children:[{id:'note',label:'Custom note',type:'content'},{id:'guide',label:'Guide page',type:'page',url:location.origin+'/?bsml_embed=section&bsml_section=welcome&bsml_child=guide'}]}],defaultTab:'clearings',embed:location.origin+'/',ajax:'/ajax',wishlistNonce:'fixture',wishlist:true,login:'/login'};</script><script src="/assets/library.js"></script>`);
+<script>window.wp.apiFetch=async function(o){let r=await fetch(o.url,{...o,headers:{...o.headers,'Content-Type':'application/json'},body:o.data?JSON.stringify(o.data):undefined});if(!r.ok)throw await r.json();return r.json()};window.BSML={root:'/api/',nonce:'fixture',tabs:[{id:'clearings',label:'My Clearings',type:'standard',sort:'newest'},{id:'vip',label:'My VIP Membership',type:'membership',sort:'newest'},{id:'wishlist',label:'My Wishlist',type:'wishlist',sort:'newest'},{id:'programs',label:'My Programs',type:'standard',show_related:false},{id:'quiet',label:'Quiet library',type:'standard',show_related:false,show_terms:false},{id:'account',label:'My Account',type:'account',accountUrl:location.origin+'/native-account/',accountRoutes:Object.fromEntries(['dashboard','orders','view-order','edit-address','payment-methods','edit-account'].map(key=>[key,location.origin+'/native-account/'+(key==='dashboard'?'':key+'/')])),children:[{id:'dashboard',label:'Dashboard',type:'account'},{id:'orders',label:'Orders',type:'account'},{id:'edit-address',label:'Addresses',type:'account'},{id:'payment-methods',label:'Payment methods',type:'account'},{id:'edit-account',label:'Account details',type:'account'}]},{id:'help',label:'Help page',type:'page',newTab:true,url:location.origin+'/help-page/'},{id:'welcome',label:'Welcome',type:'content',url:location.origin+'/?bsml_embed=section&bsml_section=welcome',children:[{id:'note',label:'Custom note',type:'content'},{id:'inline-page',label:'Inline page',type:'page',contentOnly:true},{id:'full-page',label:'Iframe page',type:'page',contentOnly:false,url:location.origin+'/frame-page/?bsml_embed=section&bsml_section=welcome&bsml_child=full-page'},{id:'new-guide',label:'New tab guide',type:'page',newTab:true,url:location.origin+'/new-tab-guide/'},{id:'guide',label:'Guide page',type:'page',contentOnly:false,url:location.origin+'/?bsml_embed=section&bsml_section=welcome&bsml_child=guide'}]}],defaultTab:'clearings',embed:location.origin+'/',ajax:'/ajax',wishlistNonce:'fixture',wishlist:true,login:'/login'};</script><script src="/assets/library.js"></script>`);
 });
 (async () => {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -101,6 +127,12 @@ const server = http.createServer((req, res) => {
         assert.equal(await library.getByRole('combobox').inputValue(), 'za');
         const before = calls.length;
         await page.getByRole('button', {name: 'My VIP Membership'}).click();
+        await page.getByText('Book your appointment', {exact:true}).waitFor();
+        assert.equal(await page.locator('iframe').count(), 0, 'Appointment is rendered directly');
+        appointmentBooked = true;
+        await page.getByRole('button', {name:'Refresh', exact:true}).click();
+        await page.getByText('Your appointment is booked', {exact:true}).waitFor();
+        assert.equal(await page.getByText('Book your appointment', {exact:true}).count(), 0);
         const live = page.getByRole('region', {name: 'Choose your live gec'});
         await live.getByRole('button', {name: 'Select', exact: true}).first().click();
         await page.getByRole('button', {name: 'Claim selected items'}).first().click();
@@ -114,6 +146,35 @@ const server = http.createServer((req, res) => {
         await library.getByRole('link', {name: 'Open program', exact: true}).first().waitFor();
         assert.equal(await library.getByRole('link', {name: 'Open program', exact: true}).first().getAttribute('href'), '/courses/program-1');
         assert.equal(await library.getByRole('button', {name: 'Open clearing', exact: true}).count(), 0);
+        await page.getByRole('button', {name: 'My Account', exact: true}).click();
+        await page.getByText('Hello, member.', {exact: true}).waitFor();
+        assert.equal(await page.locator('iframe').count(), 0, 'WooCommerce account is inline');
+        assert.equal(await page.getByRole('button', {name: 'Downloads', exact: true}).count(), 0, 'Excluded account submenu is absent');
+        await page.getByRole('button', {name: 'Orders', exact: true}).click();
+        await page.getByRole('link', {name: 'View order', exact: true}).click();
+        await page.getByRole('heading', {name: 'Order #123', exact: true}).waitFor();
+        assert(page.url().includes('bsml_account_endpoint=view-order'));
+        assert.equal(await page.getByRole('button', {name: 'Orders', exact: true}).getAttribute('aria-current'), 'page');
+        await page.goBack();
+        await page.getByRole('link', {name: 'View order', exact: true}).waitFor();
+        await page.screenshot({path:'/private/tmp/bsml-account-desktop.png',fullPage:true});
+        await page.getByRole('button', {name: 'Account details', exact: true}).click();
+        await page.getByLabel('First name', {exact: true}).fill('Updated fixture');
+        await page.getByRole('button', {name: 'Save changes', exact: true}).click();
+        await page.getByText('Account saved successfully', {exact: true}).waitFor();
+        assert.equal(accountSaves, 1);
+        assert(!page.url().includes('/native-account/'), 'Saving does not navigate away from the library');
+        await page.getByRole('button', {name: 'Addresses', exact: true}).click();
+        await page.getByRole('link', {name: 'Edit billing address', exact: true}).click();
+        await page.getByLabel('City', {exact: true}).fill('Fixture city');
+        await page.getByRole('button', {name: 'Save address', exact: true}).click();
+        await page.getByText('Account saved successfully', {exact: true}).waitFor();
+        await page.getByRole('link', {name: 'Edit billing address', exact: true}).waitFor();
+        assert.equal(accountSaves, 2);
+        assert(!page.url().includes('bsml_account_value=billing'), 'Address success redirects to its overview inside the library');
+        await page.getByRole('button', {name: 'Payment methods', exact: true}).click();
+        await page.getByRole('link', {name: 'Add payment method', exact: true}).waitFor();
+        assert((await page.getByRole('link', {name: 'Add payment method', exact: true}).getAttribute('href')).endsWith('/native-account/add-payment-method/'));
         const beforeQuiet = calls.length;
         await page.getByRole('button', {name: 'Quiet library', exact: false}).click();
         await library.getByRole('button', {name: 'Open clearing'}).first().waitFor();
@@ -130,6 +191,24 @@ const server = http.createServer((req, res) => {
         assert.equal(await page.evaluate(() => window.shortcodeLibraryLoads), 1, 'External shortcode dependencies are not loaded twice');
         await page.getByRole('button', {name: 'Welcome', exact: true}).click();
         await page.getByText('Custom text: welcome', {exact: true}).waitFor();
+        await page.getByRole('button', {name: 'Inline page', exact: true}).click();
+        await page.getByText('Custom text: inline-page', {exact: true}).waitFor();
+        assert.equal(await page.locator('iframe').count(), 0, 'Checked page option renders directly in the display panel');
+        await page.getByRole('button', {name: 'Iframe page', exact: true}).click();
+        await page.locator('iframe').waitFor();
+        const fullPageSrc = await page.locator('iframe').getAttribute('src');
+        assert(fullPageSrc.includes('bsml_embed=section') && !fullPageSrc.includes('bsml_page='), 'Unchecked page option uses the minimal content viewer, not a native full page');
+        await page.getByRole('button', {name: 'Welcome', exact: true}).click();
+        await page.getByText('Custom text: welcome', {exact: true}).waitFor();
+        const beforeExternal = page.url();
+        const popupPromise = page.waitForEvent('popup');
+        await page.getByRole('link', {name: 'New tab guide (opens in a new tab)', exact: true}).click();
+        const popup = await popupPromise;
+        await popup.waitForLoadState();
+        assert(popup.url().endsWith('/new-tab-guide/'));
+        await popup.close();
+        assert.equal(page.url(), beforeExternal, 'New-tab submenu leaves the library in place');
+        assert.equal(await page.getByRole('link', {name: 'Help page (opens in a new tab)', exact: true}).getAttribute('target'), '_blank');
         const toggle = page.getByRole('button', {name: 'Toggle Welcome submenu'});
         assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
         await page.getByRole('button', {name: 'Guide page', exact: true}).click();
@@ -153,9 +232,20 @@ const server = http.createServer((req, res) => {
         await page.getByRole('heading', {name: 'Level 3', exact: true}).waitFor();
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'No mobile horizontal overflow');
         await page.screenshot({path: '/private/tmp/bsml-mobile.png', fullPage: true});
+        const mobilePopupPromise = page.waitForEvent('popup');
+        await page.getByRole('combobox', {name: 'Library section'}).selectOption('help');
+        const mobilePopup = await mobilePopupPromise;
+        await mobilePopup.waitForLoadState();
+        assert(mobilePopup.url().endsWith('/help-page/'));
+        await mobilePopup.close();
+        assert.equal(await page.getByRole('combobox', {name: 'Library section'}).inputValue(), 'vip', 'Mobile new-tab link preserves the selected library section');
         await page.getByRole('combobox', {name: 'Library section'}).selectOption('welcome/guide');
         await page.getByRole('heading', {name: 'Guide page', exact: true}).waitFor();
         assert((await page.locator('iframe').getAttribute('src')).includes('bsml_child=guide'));
+        await page.getByRole('combobox', {name: 'Library section'}).selectOption('account/orders');
+        await page.getByRole('link', {name: 'View order', exact: true}).waitFor();
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Account layout fits mobile');
+        await page.screenshot({path:'/private/tmp/bsml-account-mobile.png',fullPage:true});
         await page.goto('http://127.0.0.1:' + server.address().port + '/admin-fixture');
         const adminRow = page.locator('.bsml-tab-config');
         await adminRow.locator(':scope > summary').click();
@@ -180,7 +270,19 @@ const server = http.createServer((req, res) => {
         await page.evaluate(() => document.getElementById('bsml-settings').addEventListener('submit', e => e.preventDefault()));
         await page.getByRole('button', {name: 'Save', exact: true}).click();
         assert.equal(await children.first().locator('input[name$="[label]"]').getAttribute('name'), 'bsml_settings[tabs][0][children][0][label]');
+        await page.goto('http://127.0.0.1:' + server.address().port + '/membership-admin-fixture');
+        const tier = page.locator('.bsml-tier-card').first();
+        await tier.locator('summary').click();
+        const override = tier.locator('[data-membership-toggle]').first();
+        assert.equal(await override.isVisible(), false);
+        await tier.locator('#bsml-override-0-live').check();
+        assert.equal(await override.isVisible(), true);
+        await tier.locator('#bsml-override-0-live').uncheck();
+        assert.equal(await override.isVisible(), false);
+        await page.locator('.bsml-membership-editor').first().locator('summary').click();
+        await page.waitForFunction(() => document.getElementById('appointment_available').dataset.editorReady === '1');
+        await page.screenshot({path:'/private/tmp/bsml-membership-settings.png', fullPage:true});
         assert.deepEqual(errors, []);
-        console.log('PASS browser: rendering, full-list search, sorting, filters, inline viewer cleanup, claims, fresh revisits, wishlist removal, mobile layout, native cart success feedback, content submenus/history, display switches, taxonomy reloads, submenu editing/order; no JavaScript errors');
+        console.log('PASS browser: rendering, full-list search, sorting, filters, inline viewer cleanup, claims, fresh revisits, wishlist removal, mobile layout, native cart success feedback, content submenus/history, display switches, taxonomy reloads, submenu editing/order, native account navigation/forms/mobile layout; no JavaScript errors');
     } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); server.close(); process.exitCode = 1; });

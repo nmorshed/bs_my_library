@@ -46,7 +46,11 @@ add_action( 'wp_ajax_bsml_terms', function () {
 function bsml_content_admin( $prefix, $section ) {
     echo '<div data-section-types="page" class="bsml-content-fields">';
     bsml_terms_page_field( $prefix . '][page_id', $section['page_id'] ?? 0 );
-    echo '<p>Displays page content inside the library. Published pages retain Connector Wizard and password restrictions.</p></div><div data-section-types="content" class="bsml-content-fields"><label class="bsml-field"><span>Custom content</span><textarea class="bsml-content-editor" rows="10" name="bsml_settings[' . esc_attr( $prefix ) . '][content]">' . esc_textarea( $section['content'] ?? '' ) . '</textarea></label><p>Supports formatted text and installed shortcodes. Visible to logged-in members who open this section.</p></div>';
+    bsml_check( $prefix . '][page_content_only', 'Load page content directly (no iframe)', ! isset( $section['page_content_only'] ) || ! empty( $section['page_content_only'] ) );
+    bsml_check( $prefix . '][page_new_tab', 'Open page in a new tab', ! empty( $section['page_new_tab'] ) );
+    echo '<label class="bsml-field"><span>Required GHL tags (any match)</span><textarea rows="3" name="bsml_settings[' . esc_attr( $prefix ) . '][page_tags]">' . esc_textarea( implode( "\n", bsml_page_tags( $section['page_tags'] ?? array() ) ) ) . '</textarea><small>One tag per line or comma-separated. Leave blank for no extra menu restriction. A member needs any matching tag. If a parent is hidden, its submenus are hidden too.</small></label>';
+
+    echo '<p>Checked: render content directly in the panel. Unchecked: use the iframe viewer. Neither mode includes the site header or footer. Opening in a new tab still shows only page content. Existing page access restrictions still apply.</p></div><div data-section-types="content" class="bsml-content-fields"><label class="bsml-field"><span>Custom content</span><textarea class="bsml-content-editor" rows="10" name="bsml_settings[' . esc_attr( $prefix ) . '][content]">' . esc_textarea( $section['content'] ?? '' ) . '</textarea></label><p>Supports formatted text and installed shortcodes. Visible to logged-in members who open this section.</p></div>';
 }
 function bsml_terms_page_field( $name, $selected ) {
     echo '<label class="bsml-field"><span>WordPress page</span><input type="search" class="bsml-term-search" placeholder="Find page…"><select name="bsml_settings[' . esc_attr( $name ) . ']">';
@@ -73,7 +77,7 @@ function bsml_admin_tab( $index, $tab ) {
     echo '<details class="bsml-tab-config"><summary>' . esc_html( $tab['label'] ) . '</summary><h3>Basic details</h3><div class="bsml-admin-grid">';
     bsml_field( $prefix . '][label', 'Menu label', $tab['label'] );
     echo '<label class="bsml-field"><span>Section type</span><select class="bsml-section-type" name="bsml_settings[' . esc_attr( $prefix ) . '][type]">';
-    foreach ( array( 'standard' => 'Standard library', 'membership' => 'VIP Membership', 'wishlist' => 'WebToffee Wishlist', 'page' => 'WordPress Page', 'content' => 'Custom Content' ) as $key => $label ) { echo '<option value="' . esc_attr( $key ) . '" ' . selected( $tab['type'], $key, false ) . '>' . esc_html( $label ) . '</option>'; }
+    foreach ( array( 'standard' => 'Standard library', 'membership' => 'VIP Membership', 'wishlist' => 'WebToffee Wishlist', 'page' => 'WordPress Page', 'content' => 'Custom Content', 'account' => 'WooCommerce My Account' ) as $key => $label ) { echo '<option value="' . esc_attr( $key ) . '" ' . selected( $tab['type'], $key, false ) . '>' . esc_html( $label ) . '</option>'; }
     echo '</select></label>'; bsml_check( $prefix . '][enabled', 'Enabled', $tab['enabled'] ); echo '</div>';
     echo '<div data-section-types="standard"><h3>Library content</h3><div class="bsml-admin-grid"><label class="bsml-field"><span>Taxonomy</span><select class="bsml-taxonomy" name="bsml_settings[' . esc_attr( $prefix ) . '][taxonomy]">';
     foreach ( array( 'topic' => 'Topic', 'ld_course_category' => 'Program Categories' ) as $taxonomy => $label ) { echo '<option value="' . esc_attr( $taxonomy ) . '" ' . selected( $tab['taxonomy'], $taxonomy, false ) . '>' . esc_html( $label ) . '</option>'; }
@@ -92,6 +96,11 @@ function bsml_admin_tab( $index, $tab ) {
     echo '<div data-section-types="standard membership wishlist"><label class="bsml-field"><span>Default sort</span><select name="bsml_settings[' . esc_attr( $prefix ) . '][sort]">';
     foreach ( array( 'newest' => 'Newest', 'oldest' => 'Oldest', 'az' => 'Title A–Z', 'za' => 'Title Z–A', 'event_asc' => 'Event date: next first', 'event_desc' => 'Event date: latest first' ) as $value => $label ) { echo '<option value="' . esc_attr( $value ) . '" ' . selected( $tab['sort'], $value, false ) . '>' . esc_html( $label ) . '</option>'; }
     echo '</select></label></div>';
+    echo '<div data-section-types="account"><h3>Account submenus</h3><p>Choose which submenus to exclude from this library section. WooCommerce still manages the account and its permissions.</p><div class="bsml-admin-grid">';
+    foreach ( bsml_account_options() as $endpoint => $label ) {
+        echo '<label class="bsml-check"><input type="checkbox" name="bsml_settings[' . esc_attr( $prefix ) . '][account_exclude][]" value="' . esc_attr( $endpoint ) . '" ' . checked( in_array( $endpoint, $tab['account_exclude'] ?? array( 'customer-logout' ), true ), true, false ) . '> Exclude ' . esc_html( $label ) . '</label>';
+    }
+    echo '</div><p>Orders, addresses and account details open inside the library. Payment setup, payment actions, logout and extension screens use their native WooCommerce flow.</p></div>';
     bsml_content_admin( $prefix, $tab );
     echo '<div data-section-types="page content"><h3>Submenus</h3><p>One level of submenu items. Each can display a page or custom content.</p><div class="bsml-children">';
     foreach ( $tab['children'] as $n => $child ) { bsml_admin_child( $prefix . '][children][' . $n, $child ); }
@@ -108,7 +117,7 @@ function bsml_admin() {
     echo '<div class="wrap bsml-admin"><h1>My Library</h1><p>Place <code>[bs_my_library]</code> on your library page. Configure category mappings before launch. Purchased means <strong>any product access tag</strong> matches the member.</p>';
     if ( ! function_exists( 'hlwpw_has_access' ) ) { echo '<div class="notice notice-error"><p>Connector Wizard is required.</p></div>'; }
     echo '<div class="notice notice-warning inline"><p>Exclude every library page from your page cache/CDN. Add page IDs below for builder-based pages. This plugin sends no-store headers, but cannot override a cache that serves a page before WordPress runs.</p></div>';
-    settings_errors();
+    // WordPress already renders Settings API notices for options pages.
     echo '<form method="post" action="options.php" id="bsml-settings">'; settings_fields( 'bsml' );
     echo '<nav class="nav-tab-wrapper bsml-admin-nav" aria-label="My Library settings">';
     foreach ( array( 'general' => 'General', 'sections' => 'Library Sections', 'membership' => 'Membership', 'appearance' => 'Appearance', 'claims' => 'Claim Management' ) as $id => $label ) { echo '<button type="button" class="nav-tab" data-panel="' . esc_attr( $id ) . '">' . esc_html( $label ) . '</button>'; }
@@ -122,33 +131,46 @@ function bsml_admin() {
     foreach ( $settings['tabs'] as $i => $tab ) { bsml_admin_tab( $i, $tab ); }
     echo '</div><p><button type="button" class="button" id="bsml-add-tab">Add section</button></p><template id="bsml-tab-template">';
     $blank = bsml_defaults()['tabs'][0]; $blank['id'] = ''; $blank['label'] = 'New section'; bsml_admin_tab( 'NEW', $blank );
-    echo '</template></section><section class="bsml-settings-panel" data-panel-id="membership"><h2>Membership tiers</h2><p>Highest matching tier wins. Allowances are capped at four because four usage-count tags are configured.</p>';
-    foreach ( $settings['tiers'] as $i => $tier ) {
-        echo '<fieldset><legend>' . esc_html( $tier['label'] ) . '</legend><div class="bsml-admin-grid">';
-        foreach ( array( 'label' => 'Tier label', 'tag' => 'GHL tier tag', 'live' => 'Live GEC allowance', 'replay' => 'Replay allowance' ) as $key => $label ) { bsml_field( 'tiers][' . $i . '][' . $key, $label, $tier[ $key ], in_array( $key, array( 'live', 'replay' ), true ) ? 'number' : 'text' ); }
-        bsml_check( 'tiers][' . $i . '][appointment', 'Eligible for accelerator appointment', $tier['appointment'] );
-        foreach ( array( 'live' => 'Live GEC', 'replay' => 'Replay' ) as $key => $label ) {
-            bsml_check( 'tiers][' . $i . '][custom_' . $key, 'Use custom ' . $label . ' categories for this tier', ! empty( $tier[ 'custom_' . $key ] ) );
-            bsml_scope_fields( 'tiers][' . $i . '][' . $key . '_scope', bsml_scope( $tier[ $key . '_scope' ] ?? array() ), 'product_cat' );
-        }
-        echo '</div></fieldset>';
-    }
-    foreach ( $settings['benefits'] as $key => $benefit ) {
-        echo '<h2>' . esc_html( $benefit['label'] ) . '</h2><div class="bsml-admin-grid">';
-        bsml_field( 'benefits][' . $key . '][label', 'Benefit label', $benefit['label'] );
-        bsml_scope_fields( 'benefits][' . $key, $benefit, 'product_cat' );
-        foreach ( $benefit['tags'] as $n => $tag ) { bsml_field( 'benefits][' . $key . '][tags][' . $n, 'Tag for ' . $n . ' used', $tag ); }
-        echo '</div>';
-    }
-    echo '<h2>Accelerator appointment</h2><p>GHL owns booking and the appointment tag. These fields support formatted content and trusted installed shortcodes. Only administrators can edit them.</p>';
-    bsml_field( 'appointment_tag', 'Appointment booked tag', $settings['appointment_tag'] );
-    foreach ( array( 'appointment_available' => 'Content when appointment is available', 'appointment_booked' => 'Content when appointment is booked' ) as $key => $label ) {
-        echo '<h3>' . esc_html( $label ) . '</h3>';
-        wp_editor( $settings[ $key ], $key, array( 'textarea_name' => 'bsml_settings[' . $key . ']', 'textarea_rows' => 6, 'media_buttons' => true ) );
-    }
+    echo '</template></section><section class="bsml-settings-panel" data-panel-id="membership">';
+    bsml_admin_membership( $settings );
     echo '</section>'; submit_button(); echo '</form><section class="bsml-settings-panel" data-panel-id="claims">';
     bsml_admin_pending(); echo '</section></div>';
 }
+function bsml_admin_membership( $settings ) {
+    echo '<div class="bsml-membership-heading"><h2>Membership</h2><p>Set tier allowances, shared claim categories and appointment content. GHL remains the source of truth for usage and renewal.</p></div><h3>1. Tiers and allowances</h3><p class="description">The highest matching tier wins. Expand a tier to edit its allowances or override the shared categories below.</p>';
+    foreach ( $settings['tiers'] as $i => $tier ) {
+        echo '<details class="bsml-membership-card bsml-tier-card"><summary><strong>' . esc_html( $tier['label'] ) . '</strong><span>' . (int) $tier['live'] . ' live · ' . (int) $tier['replay'] . ' replay' . ( $tier['appointment'] ? ' · Appointment included' : '' ) . '</span></summary><div class="bsml-membership-body"><div class="bsml-admin-grid">';
+        foreach ( array( 'label' => 'Tier label', 'tag' => 'GHL tier tag', 'live' => 'Live GEC allowance', 'replay' => 'Replay allowance' ) as $key => $label ) { bsml_field( 'tiers][' . $i . '][' . $key, $label, $tier[$key], in_array( $key, array( 'live', 'replay' ), true ) ? 'number' : 'text' ); }
+        echo '</div><p class="description">Allowances support 0–4 items, matching the configured count tags.</p>';
+        bsml_check( 'tiers][' . $i . '][appointment', 'Eligible for an accelerator appointment', $tier['appointment'] );
+        echo '<h4>Category overrides</h4><p class="description">Use shared categories unless this tier needs a different selection.</p>';
+        foreach ( array( 'live' => 'Live GEC', 'replay' => 'Replay' ) as $key => $label ) {
+            $control = 'bsml-override-' . $i . '-' . $key;
+            echo '<div class="bsml-membership-override"><label class="bsml-check"><input type="checkbox" id="' . esc_attr( $control ) . '" name="bsml_settings[tiers][' . (int) $i . '][custom_' . esc_attr( $key ) . ']" value="1" ' . checked( ! empty( $tier['custom_' . $key] ), true, false ) . '> Use custom ' . esc_html( $label ) . ' categories</label><div class="bsml-admin-grid" data-membership-toggle="' . esc_attr( $control ) . '">';
+            bsml_scope_fields( 'tiers][' . $i . '][' . $key . '_scope', bsml_scope( $tier[$key . '_scope'] ?? array() ), 'product_cat' );
+            echo '</div></div>';
+        }
+        echo '</div></details>';
+    }
+    echo '<h3 class="bsml-membership-group-title">2. Shared benefits</h3><p class="description">These categories apply to every tier unless a tier override is enabled. Existing count tags are retained; the highest matching count is used.</p>';
+    foreach ( $settings['benefits'] as $key => $benefit ) {
+        echo '<details class="bsml-membership-card"><summary><strong>' . esc_html( $benefit['label'] ) . '</strong><span>Categories and usage tags</span></summary><div class="bsml-membership-body">';
+        bsml_field( 'benefits][' . $key . '][label', 'Benefit label', $benefit['label'] );
+        echo '<h4>Claimable categories</h4><div class="bsml-admin-grid">';
+        bsml_scope_fields( 'benefits][' . $key, $benefit, 'product_cat' );
+        echo '</div><h4>GHL count tags</h4><div class="bsml-admin-grid">';
+        foreach ( $benefit['tags'] as $n => $tag ) { bsml_field( 'benefits][' . $key . '][tags][' . $n, 'Tag for ' . $n . ' claimed', $tag ); }
+        echo '</div></div></details>';
+    }
+    echo '<h3 class="bsml-membership-group-title">Message for non-members</h3><div class="bsml-membership-card bsml-membership-body"><p>Shown when the account has no eligible VIP membership tier. Edit the heading and message, and add a membership link if you wish. Supports formatted text and HTML.</p><label class="bsml-field"><span>Non-member content</span><textarea id="membership_guest_content" class="bsml-content-editor" rows="8" name="bsml_settings[membership_guest_content]">' . esc_textarea( $settings['membership_guest_content'] ) . '</textarea></label></div>';
+    echo '<h3 class="bsml-membership-group-title">3. Accelerator appointment</h3><div class="bsml-membership-card bsml-membership-body"><p>Eligible members see one of the two messages below, directly in the library. GHL handles bookings and the booked tag.</p>';
+    bsml_field( 'appointment_tag', 'GHL appointment booked tag', $settings['appointment_tag'] );
+    foreach ( array( 'appointment_available' => 'Available — no booked tag', 'appointment_booked' => 'Booked — booked tag present' ) as $key => $label ) {
+        echo '<details class="bsml-membership-editor"><summary>' . esc_html( $label ) . '</summary><p>Use Visual mode for formatting or Text mode for HTML. Installed shortcodes are supported.</p><label class="bsml-field"><span>' . esc_html( $label ) . ' content</span><textarea id="' . esc_attr( $key ) . '" class="bsml-content-editor" rows="10" name="bsml_settings[' . esc_attr( $key ) . ']">' . esc_textarea( $settings[$key] ) . '</textarea></label></details>';
+    }
+    echo '</div>';
+}
+
 function bsml_admin_pending() {
     global $wpdb;
     $rows = $wpdb->get_results( "SELECT * FROM {$wpdb->prefix}bsml_claims WHERE status='pending' ORDER BY id DESC LIMIT 50" );

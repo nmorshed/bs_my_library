@@ -1,6 +1,7 @@
 <?php
 defined( 'ABSPATH' ) || exit;
 show_admin_bar( false );
+$bsml_content_only = isset( $GLOBALS['bsml_content_section'] );
 $bsml_custom_content = isset( $GLOBALS['bsml_content_section'] ) && $GLOBALS['bsml_content_section']['type'] === 'content';
 // Render shortcode/player output BEFORE wp_head so enqueued dependencies are available.
 ob_start();
@@ -20,7 +21,12 @@ if ( isset( $GLOBALS['bsml_embed_id'] ) ) {
     add_shortcode( 'bs_my_library', '__return_empty_string' );
     if ( $section['type'] === 'page' ) {
         $GLOBALS['wp_query'] = new WP_Query( array( 'page_id' => $section['page_id'], 'post_type' => 'page', 'post_status' => 'publish', 'cache_results' => false ) );
-        while ( have_posts() ) { the_post(); the_content(); }
+        while ( have_posts() ) {
+            the_post();
+            // Let builders and shortcodes register assets with the correct page context.
+            if ( ! did_action( 'wp_enqueue_scripts' ) ) { wp_enqueue_scripts(); }
+            the_content();
+        }
     } else {
         // Custom text is not a WordPress page: do not run theme/builder content filters.
         echo bsml_render_custom_content( $section['content'] );
@@ -34,7 +40,7 @@ $content = ob_get_clean();
 ?><!doctype html>
 <html <?php language_attributes(); ?>><head><meta charset="<?php bloginfo( 'charset' ); ?>"><meta name="viewport" content="width=device-width, initial-scale=1"><base target="_blank">
 <?php
-if ( $bsml_custom_content ) {
+if ( $bsml_content_only ) {
     // Print assets enqueued by the content/shortcodes without site-wide head hooks.
     wp_print_styles();
     wp_scripts()->do_head_items();
@@ -43,7 +49,7 @@ if ( $bsml_custom_content ) {
 <style>html,body{margin:0!important;padding:0!important;background:#fff}body{padding:16px!important;box-sizing:border-box}img,video{max-width:100%;height:auto}iframe{max-width:100%}.bsml-clearing{max-width:100%;overflow-wrap:anywhere}.bsml-clearing h1{margin-top:0}a{color:#611203}</style>
 </head><body <?php if ( $bsml_custom_content ) { echo 'class="bsml-embedded bsml-custom-content"'; } else { body_class( 'bsml-embedded' ); } ?>><?php echo $content; // Trusted WordPress template/shortcode rendering. ?>
 <?php
-if ( $bsml_custom_content ) {
+if ( $bsml_content_only ) {
     // Keep registered footer dependencies, but omit global widgets/popups/footer markup.
     wp_scripts()->do_footer_items();
 } else { wp_footer(); }

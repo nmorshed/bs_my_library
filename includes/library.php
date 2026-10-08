@@ -76,7 +76,7 @@ function bsml_filters( $taxonomy, $scope, $explicit = array() ) {
         // descendants are disabled. Excluded descendants cannot populate it.
         $filter_ids = bsml_expand_terms( array( $id ), $taxonomy, $scope['descendants'] );
         if ( isset( $by_id[ $id ] ) && array_intersect( $filter_ids, $populated ) ) {
-            $terms[] = array( 'id' => (int) $id, 'label' => $by_id[ $id ]->name );
+            $terms[] = array( 'id' => (int) $id, 'label' => html_entity_decode( $by_id[ $id ]->name, ENT_QUOTES, get_bloginfo( 'charset' ) ) );
         }
     }
     return $terms;

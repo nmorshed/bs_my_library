@@ -2,13 +2,13 @@
 /**
  * Plugin Name: BS My Library
  * Description: Searchable member library, inline clearings, and GHL-authoritative membership claims.
- * Version: 1.2.7
+ * Version: 1.2.8
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Text Domain: bs-my-library
  */
 defined( 'ABSPATH' ) || exit;
-define( 'BSML_VERSION', '1.2.7' );
+define( 'BSML_VERSION', '1.2.8' );
 define( 'BSML_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BSML_URL', plugin_dir_url( __FILE__ ) );
 require_once BSML_DIR . 'includes/settings.php';

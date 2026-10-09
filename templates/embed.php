@@ -46,7 +46,7 @@ if ( $bsml_content_only ) {
     wp_scripts()->do_head_items();
 } else { wp_head(); }
 ?>
-<style>html,body{margin:0!important;padding:0!important;background:#fff}body{padding:16px!important;box-sizing:border-box}img,video{max-width:100%;height:auto}iframe{max-width:100%}.bsml-clearing{max-width:100%;overflow-wrap:anywhere}.bsml-clearing h1{margin-top:0}a{color:#611203}</style>
+<style>html,body{margin:0!important;padding:0!important;background:#fff}body{padding:16px!important;box-sizing:border-box}img,video{max-width:100%;height:auto}iframe{max-width:100%}.bsml-clearing{max-width:100%;overflow-wrap:anywhere}.bsml-clearing h1{text-transform:none;margin-top:0;font-size:clamp(24px,calc(20px + 2vw),38px);font-weight:500;line-height:1.25}@media(max-width:782px){.bsml-clearing h1{font-size:16px}}a{color:#611203}</style>
 </head><body <?php if ( $bsml_custom_content ) { echo 'class="bsml-embedded bsml-custom-content"'; } else { body_class( 'bsml-embedded' ); } ?>><?php echo $content; // Trusted WordPress template/shortcode rendering. ?>
 <?php
 if ( $bsml_content_only ) {

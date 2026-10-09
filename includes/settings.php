@@ -2,7 +2,7 @@
 defined( 'ABSPATH' ) || exit;
 
 function bsml_defaults() {
-    $names = array( 'books-audios' => 'My Books & Audios', 'chakra' => 'My Chakra Series', 'classes' => 'My Classes', 'clearings' => 'My Clearings', 'gifts' => 'My Free Gifts', 'journeys' => 'My Guided Journeys', 'vip' => 'My VIP Membership', 'packages' => 'My Packages', 'programs' => 'My Programs', 'purchased' => 'My Purchased', 'wishlist' => 'My Wishlist' );
+    $names = array( 'books-audios' => 'Books & Audios', 'chakra' => 'Chakra Series', 'classes' => 'Classes', 'clearings' => 'Clearings', 'gifts' => 'Free Gifts', 'journeys' => 'Guided Journeys', 'vip' => 'VIP Membership', 'packages' => 'Packages', 'programs' => 'Programs', 'purchased' => 'Purchased', 'wishlist' => 'Wishlist' );
     $tabs = array();
     foreach ( $names as $id => $label ) {
         $tabs[] = array( 'id' => $id, 'label' => $label, 'type' => $id === 'vip' ? 'membership' : ( $id === 'wishlist' ? 'wishlist' : 'standard' ), 'enabled' => true, 'taxonomy' => 'topic', 'include' => array(), 'exclude' => array(), 'descendants' => true, 'exclude_descendants' => true, 'filters' => array(), 'related' => array(), 'related_exclude' => array(), 'related_descendants' => true, 'related_exclude_descendants' => true, 'filter_map' => array(), 'sort' => 'newest', 'show_related' => true, 'show_terms' => true, 'page_id' => 0, 'content' => '', 'account_exclude' => array( 'customer-logout' ), 'children' => array() );

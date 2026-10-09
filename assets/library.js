@@ -450,7 +450,14 @@
         return h('div', {className: 'bsml-shell'},
             h('aside', {className: 'bsml-sidebar'}, h('div', {className: 'bsml-brand'}, h('span', {className: 'bsml-eyebrow'}, 'A SPACE FOR YOUR GROWTH'), h('strong', null, 'My Library')),
                 h('nav', {'aria-label': 'Library sections', className: 'bsml-desktop-nav'}, tabs.map((item, index) => h(MenuItem, {key: item.id, item, index, active: item.id === tab.id, childId: child && child.id, navigate}))),
-                h('label', {className: 'bsml-mobile-nav'}, h('span', {className: 'bsml-sr'}, 'Library section'), h('select', {value: tab.id + (child ? '/' + child.id : ''), onChange: e => { const parts = e.target.value.split('/'); if (navigate(parts[0], parts[1])) e.target.value = tab.id + (child ? '/' + child.id : ''); }}, tabs.flatMap(item => [h('option', {value: item.id, key: item.id}, item.label + (item.newTab ? ' ↗' : ''))].concat((item.children || []).map(sub => h('option', {value: item.id + '/' + sub.id, key: item.id + '/' + sub.id}, '— ' + sub.label + (sub.newTab ? ' ↗' : '')))))))),
+                h('label', {className: 'bsml-mobile-nav'},
+                    h('span', {className: 'bsml-mobile-nav-label'}, 'Browse My Library'),
+                    h('span', {className: 'bsml-mobile-nav-control'},
+                        h('span', {className: 'bsml-mobile-nav-icon', 'aria-hidden': true}, '☰'),
+                        h('select', {'aria-label': 'Browse My Library', value: tab.id + (child ? '/' + child.id : ''), onChange: e => { const parts = e.target.value.split('/'); if (navigate(parts[0], parts[1])) e.target.value = tab.id + (child ? '/' + child.id : ''); }},
+                            tabs.flatMap(item => [h('option', {value: item.id, key: item.id}, item.label + (item.newTab ? ' ↗' : ''))].concat((item.children || []).map(sub => h('option', {value: item.id + '/' + sub.id, key: item.id + '/' + sub.id}, '— ' + sub.label + (sub.newTab ? ' ↗' : '')))))),
+                        h('span', {className: 'bsml-mobile-nav-arrow', 'aria-hidden': true}, '⌄')),
+                    h('span', {className: 'bsml-mobile-nav-hint'}, 'Tap to switch sections.'))),
             h('main', {className: 'bsml-main'}, h('header', {className: 'bsml-header'}, h('div', null, h('span', {className: 'bsml-eyebrow'}, clearing ? 'YOUR VIEWING SPACE' : 'WELCOME TO YOUR COLLECTION'), h('h1', {ref: heading, tabIndex: -1}, display.label)), h('button', {type: 'button', className: 'bsml-refresh', onClick: refresh}, 'Refresh')),
                 clearing ? h('section', {className: 'bsml-viewer'}, h('div', {className: 'bsml-viewer-nav'}, h('button', {type: 'button', onClick: back}, '← Back to ' + tab.label), h('a', {href: config.embed + (config.embed.includes('?') ? '&' : '?') + 'post_type=clearing&p=' + clearing, target: '_blank', rel: 'noopener'}, 'Open page ↗')), h(Frame, {kind: 'clearing', id: clearing, revision})) :
                     tab.type === 'account' ? h(Account, {key: tab.id, tab, endpoint: query.get('bsml_account_endpoint') || (child && child.id) || '', value: query.get('bsml_account_value') || '', revision, onNavigate: navigateAccount}) :
